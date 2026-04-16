@@ -5,6 +5,18 @@
 
 ---
 
+## [2026-04-15] — Week 6 — Grafana compatibility fix: pinned to 11.4.0
+- `docker/docker-compose.yml` — changed `grafana/grafana:latest` to `grafana/grafana:11.4.0`; Grafana 13 (`latest`) uses unified storage mode 5 which routes dashboard reads through a new K8s-style API (`/apis/dashboard.grafana.app/v2/`) and returns 404 on the legacy `/api/dashboards/uid/:uid` endpoint; 11.4.0 uses the standard file provisioner and REST API
+- Verified end-to-end: `fg-traffic` → `FluxGuard Traffic Overview`, `fg-internals` → `FluxGuard Limiter Internals`, `fg-perclient` → `FluxGuard Per Client`; datasource proxy returns `"status":"success"` for `rate_limit_allowed_total`
+
+## [2026-04-15] — Week 6 — Grafana dashboards + provisioning
+- `grafana/dashboards/traffic-overview.json` — 4 time-series panels: allowed/sec, denied/sec, fail-open/sec, and 429 percentage using `rate_limit_allowed_total`, `rate_limit_denied_total`, and `rate_limit_failopen_total` filtered by `application="fluxguard"`
+- `grafana/dashboards/limiter-internals.json` — 4 time-series panels for p50/p95/p99 decision latency from `rate_limit_duration_seconds_bucket` plus Redis script p99 from `redis_script_duration_seconds_bucket`; all Y-axes in seconds
+- `grafana/dashboards/per-client.json` — endpoint-grouped allowed/sec and denied/sec panels plus fail-open grouped by reason
+- `grafana/provisioning/dashboards/dashboards.yaml` — file-based Grafana dashboard provisioning; provider `fluxguard-dashboards`; folder `FluxGuard`; path `/var/lib/grafana/dashboards`
+- `grafana/provisioning/datasources/prometheus.yaml` — default Prometheus datasource pointing to `http://prometheus:9090` with uid `prometheus`
+- Dashboard JSON uses schema version 36 and `timeseries` panels only
+
 ## [2026-04-15] — Week 5 — Prometheus metrics wired into RateLimitFilter + LuaScriptExecutor
 - `PrometheusMetricsCollector.java` (new) — Micrometer facade in `metrics/`; five metric families: `rate.limit.allowed` counter (endpoint, algorithm), `rate.limit.denied` counter (endpoint, algorithm), `rate.limit.failopen` counter (endpoint, reason), `rate.limit.duration` histogram (endpoint, algorithm, result), `redis.script.duration` histogram (script_name); all with `publishPercentileHistogram()` for `_bucket` output; lazy registration via `Counter/Timer.builder().register(registry)`
 - `RateLimitFilter.java` — replaced inline `MeterRegistry` + two `Counter` fields with `PrometheusMetricsCollector` injection; added `executeAndApply()` + `recordMetrics()` helpers; `DecisionOutcome` private record carries decision + resultLabel + failOpenReason; duration recorded only when a real rate-limit decision is made (not on 400 or unknown path); 21 unit tests (7 new: allowed/denied counters, duration on allow/deny/failopen, no-duration on 400, no-duration on unknown path)

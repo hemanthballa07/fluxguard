@@ -31,7 +31,7 @@
 | 3 | Sliding window counter | ✅ | `SlidingWindowAlgorithm`, `sliding_window.lua`, sealed interface + `buildLuaKeys`, `LimitConfig`, `LuaScriptExecutor`, 21 unit + 3 IT |
 | 4 | Fail-open + ECS deployment | ✅ | `RateLimitFilter`, `WebMvcConfig`, `RateLimitConfiguration`, `RateLimitFilterTest`, `RateLimitFilterIT`, Resilience4j CB |
 | 5 | Prometheus metrics | ✅ | `PrometheusMetricsCollector`, updated `RateLimitFilter`, `LuaScriptExecutor`, `PrometheusMetricsCollectorTest`, updated `RateLimitFilterTest` |
-| 6 | Grafana dashboards | ⬜ | — |
+| 6 | Grafana dashboards | ✅ | `grafana/dashboards/*.json`, Grafana provisioning YAML |
 | 7 | OpenTelemetry tracing | ⬜ | — |
 | 8 | k6 benchmarks + README | ⬜ | — |
 | 9 | Config service design | ⬜ | — |
@@ -45,43 +45,45 @@
 **Date:** 2026-04-15
 **Duration:** 1 session
 **What was completed:**
-- Created `PrometheusMetricsCollector` (`metrics/`) — all 5 metric families; public constants for names + tags; lazy Micrometer registration; `publishPercentileHistogram()` on both timers for `_bucket` output
-- Updated `RateLimitFilter` — replaced `MeterRegistry` + inline counters with `PrometheusMetricsCollector`; `DecisionOutcome` private record; `executeAndApply()` + `recordMetrics()` helpers; duration only recorded on real rate-limit decisions (not 400 or unknown path)
-- Updated `LuaScriptExecutor` — injected `PrometheusMetricsCollector`; `redis.script.duration` timed around `redisTemplate.execute()` only; timer recorded before null check
-- Created `PrometheusMetricsCollectorTest` — 11 pure-Java unit tests; counter isolation; timer count assertions
-- Updated `RateLimitFilterTest` — 21 tests (7 new for allowed/denied counters, duration on allow/deny/failopen, no-duration guards); counter names updated to new metric names
-- Verified `/actuator/prometheus` with live stack — all 5 families present
+- Created three Grafana dashboard JSON files in `grafana/dashboards/`
+- Created Grafana dashboard provisioning YAML for folder `FluxGuard`
+- Created Prometheus datasource provisioning YAML pointing to `http://prometheus:9090`
+- Wired all dashboard queries to the exported FluxGuard metric families with `application="fluxguard"`
+- Fixed: pinned `docker-compose.yml` Grafana image to `grafana/grafana:11.4.0` — Grafana 13 (`latest`) uses unified storage (mode 5) which breaks the old `/api/dashboards/uid/:uid` REST endpoint; 11.4.0 uses standard file provisioning and the old API works correctly
+- Verified: all three dashboard titles return via `/api/dashboards/uid/` and datasource proxy returns `"status":"success"`
 
 **Files changed:**
-- `src/main/java/com/fluxguard/metrics/PrometheusMetricsCollector.java` (new)
-- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` (refactored)
-- `src/main/java/com/fluxguard/redis/LuaScriptExecutor.java` (metrics added)
-- `src/test/java/com/fluxguard/metrics/PrometheusMetricsCollectorTest.java` (new)
-- `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java` (updated)
+- `grafana/dashboards/traffic-overview.json`
+- `grafana/dashboards/limiter-internals.json`
+- `grafana/dashboards/per-client.json`
+- `grafana/provisioning/dashboards/dashboards.yaml`
+- `grafana/provisioning/datasources/prometheus.yaml`
+- `docker/docker-compose.yml` (pinned grafana image to 11.4.0)
 - `PROJECT_STATE.md`, `CHANGELOG.md`
 
 **Decisions made:**
-- All metric name/tag constants are `public static final` in `PrometheusMetricsCollector` — tests in other packages can reference them without string literals
-- `publishPercentileHistogram()` added to both timers so Prometheus output includes `_bucket` lines for p50/p95/p99 in Grafana
-- Duration NOT recorded for 400 (missing header) or unknown path (no limiting) — only real rate-limit decisions are timed
-- `DecisionOutcome` private record carries `failOpenReason` (null for non-fail-open paths) — avoids leaking reason semantics into `applyDecision`
+- Dashboard JSON schema version set to `36` with `timeseries` panels only
+- Provisioned Prometheus as the default Grafana datasource with uid `prometheus`
+- Dashboard provider folder set to `FluxGuard` and file path set to `/var/lib/grafana/dashboards`
+- Grafana pinned to `11.4.0` not `latest` — Grafana 13 unified storage breaks `type: file` provisioning compatibility with the old REST API; 11.x is LTS-stable and retains full old-API support
 
 **Tests status:**
-- `mvn test` — 71 PASS (21 SlidingWindow + 18 TokenBucket + 21 RateLimitFilter + 11 PrometheusMetricsCollector), 0 failures, 0 Checkstyle violations
-- `mvn verify` — 78 PASS (71 unit + 7 IT), 0 failures, BUILD SUCCESS
+- All three dashboard UIDs resolve correctly: `FluxGuard Traffic Overview`, `FluxGuard Limiter Internals`, `FluxGuard Per Client`
+- Datasource proxy query `rate_limit_allowed_total` returns `"status":"success"`
+- 20 warm-up requests sent; metric data flows through Prometheus to Grafana panels
 
 ---
 
 ## Current session (in progress)
-**Started:** 2026-04-15
-**Working on:** Week 5 — Prometheus metrics
+**Started:** —
+**Working on:** —
 **Blockers:** none
 
 ---
 
 ## Next session pickup
-**Start here:** Week 6 — Grafana dashboards
-**First task:** Create a Grafana dashboard JSON in `docker/grafana/` with three views: (1) rate-limit traffic (allowed/denied/failopen rates); (2) p50/p95/p99 decision latency from `rate_limit_duration_seconds`; (3) Redis script latency from `redis_script_duration_seconds`
+**Start here:** Week 7 — OpenTelemetry tracing
+**First task:** Add request and Redis tracing spans/tags so Grafana/Jaeger can correlate limiter decisions with endpoint, algorithm, result, and Redis script execution. Dashboard and provisioning files are now present under `grafana/`.
 **Context needed:** Read CLAUDE.md + this file only
 **Open questions:** none
 
@@ -112,6 +114,8 @@
 | `RateLimitConfiguration` | `config/` | ✅ Built | — | `@Configuration`; `Map<String,LimitConfig>` bean + Resilience4j `CircuitBreaker` bean |
 | `Dockerfile` | `/` | ✅ Built | — | Multi-stage; `maven:3.9-eclipse-temurin-17` build + `eclipse-temurin:17-jre-alpine` runtime; non-root user |
 | GitHub Actions CI/CD | `.github/workflows/ci.yml` | ✅ Built | — | `build-and-test` job (`mvn verify`) + `docker-build` job (ECR push on `push` events) |
+| Grafana dashboards | `grafana/dashboards/` | ✅ Built | — | Three dashboards: traffic overview, limiter internals, per-client breakdown |
+| Grafana provisioning | `grafana/provisioning/` | ✅ Built | — | File-based provider + default Prometheus datasource |
 | ECS/Fargate deployment | `scripts/deploy.sh` | ❌ Not done | — | Deferred — ECS service/task definition not yet wired |
 
 ---
@@ -158,7 +162,7 @@
 
 **Month 2 bullets (not yet earned):**
 - [x] Prometheus metrics with p50/p95/p99
-- [ ] Grafana dashboards (3 views)
+- [x] Grafana dashboards (3 views)
 - [ ] OpenTelemetry traces
 - [ ] k6 benchmark results with real numbers
 
