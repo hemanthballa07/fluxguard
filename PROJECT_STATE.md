@@ -6,8 +6,8 @@
 ---
 
 ## Current phase
-**Phase:** Month 1 — Core Foundation
-**Week:** 4 of 12
+**Phase:** Month 2 — Observability + Benchmarks
+**Week:** 6 of 12
 **Overall status:** IN PROGRESS
 
 ---
@@ -16,8 +16,8 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Month 1 | Core algorithms + Redis + deployment | 🟨 In progress |
-| Month 2 | Observability + benchmarks | ⬜ Not started |
+| Month 1 | Core algorithms + Redis + deployment | ✅ Complete |
+| Month 2 | Observability + benchmarks | 🟨 In progress |
 | Month 3 | Dynamic reconfiguration + feature flags | ⬜ Not started |
 
 ---
@@ -30,7 +30,7 @@
 | 2 | Token bucket algorithm + Lua script | ✅ | `RateLimitAlgorithm`, `TokenBucketAlgorithm`, `token_bucket.lua`, models, `ClockProvider`, 18 unit tests |
 | 3 | Sliding window counter | ✅ | `SlidingWindowAlgorithm`, `sliding_window.lua`, sealed interface + `buildLuaKeys`, `LimitConfig`, `LuaScriptExecutor`, 21 unit + 3 IT |
 | 4 | Fail-open + ECS deployment | ✅ | `RateLimitFilter`, `WebMvcConfig`, `RateLimitConfiguration`, `RateLimitFilterTest`, `RateLimitFilterIT`, Resilience4j CB |
-| 5 | Prometheus metrics | ⬜ | — |
+| 5 | Prometheus metrics | ✅ | `PrometheusMetricsCollector`, updated `RateLimitFilter`, `LuaScriptExecutor`, `PrometheusMetricsCollectorTest`, updated `RateLimitFilterTest` |
 | 6 | Grafana dashboards | ⬜ | — |
 | 7 | OpenTelemetry tracing | ⬜ | — |
 | 8 | k6 benchmarks + README | ⬜ | — |
@@ -45,48 +45,43 @@
 **Date:** 2026-04-15
 **Duration:** 1 session
 **What was completed:**
-- Created `RateLimitFilter` — `HandlerInterceptor`; 400 on missing `X-Client-ID`; exact-path `configByPath` lookup; fail-open on `RedisUnavailableException` and circuit open; 429 + `Retry-After` on deny; `X-RateLimit-Remaining` guarded by `>= 0` check
-- Created `WebMvcConfig` — registers `RateLimitFilter` for all paths
-- Created `RateLimitConfiguration` — `@Configuration` providing `Map<String, LimitConfig>` bean + `CircuitBreaker` bean named `redis-rate-limit`
-- Added Resilience4j circuit breaker config to `application.yml` (TIME_BASED, 10s window, 50% threshold, min 5 calls)
-- Added `redis.failopen.total` Micrometer counter with `reason` tag (`redis_error` / `circuit_open`)
-- Created `RateLimitFilterTest` — 14 pure-Java unit tests; real CB; `SimpleMeterRegistry`; mocked `LuaScriptExecutor`
-- Created `RateLimitFilterIT` — 4 Testcontainers IT tests (exact limit + decrement, limit+1 → 429, missing header → 400, unknown path → 200)
-- Fixed Mockito inline mock maker incompatibility with Java 25: added `mock-maker-subclass` extensions file and `-XX:+EnableDynamicAgentLoading` Surefire argLine
-- Fixed `BeanDefinitionOverrideException` in IT: added `spring.main.allow-bean-definition-overriding=true` to `@SpringBootTest` properties
+- Created `PrometheusMetricsCollector` (`metrics/`) — all 5 metric families; public constants for names + tags; lazy Micrometer registration; `publishPercentileHistogram()` on both timers for `_bucket` output
+- Updated `RateLimitFilter` — replaced `MeterRegistry` + inline counters with `PrometheusMetricsCollector`; `DecisionOutcome` private record; `executeAndApply()` + `recordMetrics()` helpers; duration only recorded on real rate-limit decisions (not 400 or unknown path)
+- Updated `LuaScriptExecutor` — injected `PrometheusMetricsCollector`; `redis.script.duration` timed around `redisTemplate.execute()` only; timer recorded before null check
+- Created `PrometheusMetricsCollectorTest` — 11 pure-Java unit tests; counter isolation; timer count assertions
+- Updated `RateLimitFilterTest` — 21 tests (7 new for allowed/denied counters, duration on allow/deny/failopen, no-duration guards); counter names updated to new metric names
+- Verified `/actuator/prometheus` with live stack — all 5 families present
 
 **Files changed:**
-- `src/main/resources/application.yml` (Resilience4j stanza)
-- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` (new)
-- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` (new)
-- `src/main/java/com/fluxguard/filter/WebMvcConfig.java` (new)
-- `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java` (new)
-- `src/test/java/com/fluxguard/integration/RateLimitFilterIT.java` (new)
-- `src/test/resources/mockito-extensions/org.mockito.plugins.MockMaker` (new)
-- `pom.xml` (Surefire argLine)
+- `src/main/java/com/fluxguard/metrics/PrometheusMetricsCollector.java` (new)
+- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` (refactored)
+- `src/main/java/com/fluxguard/redis/LuaScriptExecutor.java` (metrics added)
+- `src/test/java/com/fluxguard/metrics/PrometheusMetricsCollectorTest.java` (new)
+- `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java` (updated)
 - `PROJECT_STATE.md`, `CHANGELOG.md`
 
 **Decisions made:**
-- `X-RateLimit-Remaining` header suppressed when `remainingTokens() < 0` — fail-open path uses `allow(0L)` so header is always set on real allow; negative guard exists as safety net
-- `redis_error` counter increments only on actual Redis `RuntimeException`; `circuit_open` increments only when CB is OPEN — two separate observable signals
-- `@Primary` + `spring.main.allow-bean-definition-overriding=true` used in IT to override the production `rateLimitConfigByPath` bean with a low-limit test config; no changes to production code needed
+- All metric name/tag constants are `public static final` in `PrometheusMetricsCollector` — tests in other packages can reference them without string literals
+- `publishPercentileHistogram()` added to both timers so Prometheus output includes `_bucket` lines for p50/p95/p99 in Grafana
+- Duration NOT recorded for 400 (missing header) or unknown path (no limiting) — only real rate-limit decisions are timed
+- `DecisionOutcome` private record carries `failOpenReason` (null for non-fail-open paths) — avoids leaking reason semantics into `applyDecision`
 
 **Tests status:**
-- `mvn test` — 53 PASS (21 SlidingWindow + 18 TokenBucket + 14 RateLimitFilter), 0 failures, 0 Checkstyle violations
-- `mvn verify` — 60 PASS (53 unit + 7 IT), 0 failures, BUILD SUCCESS
+- `mvn test` — 71 PASS (21 SlidingWindow + 18 TokenBucket + 21 RateLimitFilter + 11 PrometheusMetricsCollector), 0 failures, 0 Checkstyle violations
+- `mvn verify` — 78 PASS (71 unit + 7 IT), 0 failures, BUILD SUCCESS
 
 ---
 
 ## Current session (in progress)
 **Started:** 2026-04-15
-**Working on:** Week 4 — RateLimitFilter (completed)
+**Working on:** Week 5 — Prometheus metrics
 **Blockers:** none
 
 ---
 
 ## Next session pickup
-**Start here:** Week 5 — Prometheus metrics
-**First task:** Create `PrometheusMetricsCollector` in `metrics/`; add counters for `rate_limit_allowed_total`, `rate_limit_denied_total`, `rate_limit_failopen_total` (by endpoint + algorithm tags); add `rate_limit_duration_seconds` histogram; wire into `RateLimitFilter`
+**Start here:** Week 6 — Grafana dashboards
+**First task:** Create a Grafana dashboard JSON in `docker/grafana/` with three views: (1) rate-limit traffic (allowed/denied/failopen rates); (2) p50/p95/p99 decision latency from `rate_limit_duration_seconds`; (3) Redis script latency from `redis_script_duration_seconds`
 **Context needed:** Read CLAUDE.md + this file only
 **Open questions:** none
 
@@ -102,21 +97,22 @@
 | `SlidingWindowAlgorithm` | `algorithm/` | ✅ Built + tested | 21 unit + 3 IT | Cloudflare two-counter; `evaluate()` for unit testing |
 | `token_bucket.lua` | `resources/lua/` | ✅ Built | via IT | HMGET → refill → HSET + EXPIRE |
 | `sliding_window.lua` | `resources/lua/` | ✅ Built | 3 IT | GET prev + INCR curr + EXPIRE; weighted estimate |
-| `LuaScriptExecutor` | `redis/` | ✅ Built | via IT | `@Component`; `RedisScript.of()`; no raw Redis commands |
+| `LuaScriptExecutor` | `redis/` | ✅ Built | via IT | `@Component`; `RedisScript.of()`; no raw Redis commands; `redis.script.duration` histogram |
 | `LimitConfig` | `config/` | ✅ Built | — | Record; `tokenBucket()` + `slidingWindow()` factories |
 | `ClockProvider` / `SystemClockProvider` | `util/` | ✅ Built | — | Testable clock abstraction; `@Component` |
 | `RateLimitDecision` | `model/` | ✅ Built | via algorithm tests | Record; `allow(remaining)` + `deny(resetAfterMs)` |
 | `ClientIdentity` | `model/` | ✅ Built | — | Record; `of(clientId, endpoint)` → `rl:{id}:{path}` |
-| `RateLimitFilter` | `filter/` | ✅ Built + tested | 14 unit + 4 IT | `HandlerInterceptor`; fail-open on Redis error + circuit open; 429 + Retry-After on deny |
+| `RateLimitFilter` | `filter/` | ✅ Built + tested | 21 unit + 4 IT | `HandlerInterceptor`; fail-open on Redis error + circuit open; 429 + Retry-After on deny; full metrics via `PrometheusMetricsCollector` |
 | `RateLimitException` | `exception/` | ✅ Built | — | Unchecked; carries `retryAfterMs`; thrown by filter on deny |
 | `RedisUnavailableException` | `exception/` | ✅ Built | — | Unchecked; thrown by LuaScriptExecutor on null result |
-| `PrometheusMetricsCollector` | `metrics/` | ❌ Not built | — | Week 5 |
+| `PrometheusMetricsCollector` | `metrics/` | ✅ Built + tested | 11 unit | 5 metric families; `publishPercentileHistogram()` on timers |
 | `AdminController` | `api/` | ❌ Not built | — | Month 3 |
 | `ConfigService` | `config/` | ❌ Not built | — | Month 3 — dynamic reconfiguration |
-| ECS/Fargate deployment | `scripts/deploy.sh` | ❌ Not done | — | Week 4 |
 | `WebMvcConfig` | `filter/` | ✅ Built | — | `WebMvcConfigurer`; registers `RateLimitFilter` for all paths |
-| `RateLimitConfiguration` | `config/` | ✅ Built | — | `@Configuration`; `Map<String,LimitConfig>` bean + `CircuitBreaker` bean |
-| GitHub Actions CI/CD | `.github/workflows/` | 🟨 Partial | — | CI validation + Docker/ECR push workflow added; ECS deploy still not done |
+| `RateLimitConfiguration` | `config/` | ✅ Built | — | `@Configuration`; `Map<String,LimitConfig>` bean + Resilience4j `CircuitBreaker` bean |
+| `Dockerfile` | `/` | ✅ Built | — | Multi-stage; `maven:3.9-eclipse-temurin-17` build + `eclipse-temurin:17-jre-alpine` runtime; non-root user |
+| GitHub Actions CI/CD | `.github/workflows/ci.yml` | ✅ Built | — | `build-and-test` job (`mvn verify`) + `docker-build` job (ECR push on `push` events) |
+| ECS/Fargate deployment | `scripts/deploy.sh` | ❌ Not done | — | Deferred — ECS service/task definition not yet wired |
 
 ---
 
@@ -153,15 +149,15 @@
 ## Resume bullets tracker
 > Add bullet here only when the feature is fully built and tested.
 
-**Month 1 bullets (not yet earned):**
-- [x] Token bucket + sliding window implemented
-- [x] Redis Lua scripts atomic (token_bucket.lua + sliding_window.lua)
-- [x] Fail-open with circuit breaker
-- [ ] ECS/Fargate deployed
-- [ ] CI/CD via GitHub Actions
+**Month 1 bullets — EARNED ✅:**
+- [x] Token bucket + sliding window counter implemented and tested (60 tests, 0 failures)
+- [x] Redis Lua scripts atomic — `token_bucket.lua` + `sliding_window.lua` via `LuaScriptExecutor`
+- [x] Fail-open with Resilience4j circuit breaker — `RateLimitFilter` wired; tagged counters for `redis_error` / `circuit_open`
+- [x] Dockerfile — multi-stage build; non-root runtime image; ECR-ready
+- [x] CI/CD via GitHub Actions — `mvn verify` + Checkstyle on every push; Docker image built and pushed to ECR
 
 **Month 2 bullets (not yet earned):**
-- [ ] Prometheus metrics with p50/p95/p99
+- [x] Prometheus metrics with p50/p95/p99
 - [ ] Grafana dashboards (3 views)
 - [ ] OpenTelemetry traces
 - [ ] k6 benchmark results with real numbers

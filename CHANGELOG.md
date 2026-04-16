@@ -5,6 +5,23 @@
 
 ---
 
+## [2026-04-15] — Week 5 — Prometheus metrics wired into RateLimitFilter + LuaScriptExecutor
+- `PrometheusMetricsCollector.java` (new) — Micrometer facade in `metrics/`; five metric families: `rate.limit.allowed` counter (endpoint, algorithm), `rate.limit.denied` counter (endpoint, algorithm), `rate.limit.failopen` counter (endpoint, reason), `rate.limit.duration` histogram (endpoint, algorithm, result), `redis.script.duration` histogram (script_name); all with `publishPercentileHistogram()` for `_bucket` output; lazy registration via `Counter/Timer.builder().register(registry)`
+- `RateLimitFilter.java` — replaced inline `MeterRegistry` + two `Counter` fields with `PrometheusMetricsCollector` injection; added `executeAndApply()` + `recordMetrics()` helpers; `DecisionOutcome` private record carries decision + resultLabel + failOpenReason; duration recorded only when a real rate-limit decision is made (not on 400 or unknown path); 21 unit tests (7 new: allowed/denied counters, duration on allow/deny/failopen, no-duration on 400, no-duration on unknown path)
+- `LuaScriptExecutor.java` — injected `PrometheusMetricsCollector`; `redis.script.duration` recorded between `redisTemplate.execute()` call and null-check, capturing every Redis round-trip including null-return failures
+- `PrometheusMetricsCollectorTest.java` (new) — 11 pure-Java unit tests; `SimpleMeterRegistry`; verifies counter isolation, tag correctness, timer sample count
+- `/actuator/prometheus` verified: all 5 families (`rate_limit_allowed_total`, `rate_limit_denied_total`, `rate_limit_failopen_total`, `rate_limit_duration_seconds_bucket`, `redis_script_duration_seconds_bucket`) present and correct
+- `mvn test`: 71 tests (71 unit), 0 failures, 0 Checkstyle violations
+- `mvn verify`: 78 tests (71 unit + 7 IT), 0 failures, BUILD SUCCESS
+
+## [2026-04-15] — Month 1 complete — Core Foundation shipped
+- All 5 Month 1 resume bullets earned
+- 60 tests passing (53 unit + 7 IT), 0 Checkstyle violations, BUILD SUCCESS
+- Core components: `TokenBucketAlgorithm`, `SlidingWindowAlgorithm`, `token_bucket.lua`, `sliding_window.lua`, `LuaScriptExecutor`, `RateLimitFilter`, Resilience4j circuit breaker
+- Infrastructure: multi-stage `Dockerfile`, GitHub Actions CI/CD (test + ECR push)
+- All Redis ops atomic via Lua EVAL; fail-open on any Redis exception or circuit open
+- Moving to Month 2: Prometheus metrics → Grafana dashboards → OpenTelemetry → k6 benchmarks
+
 ## [2026-04-15] — Week 4 — RateLimitFilter + Resilience4j circuit breaker
 - `application.yml` — added `resilience4j.circuitbreaker.instances.redis-rate-limit` (TIME_BASED 10s window, 50% threshold, min 5 calls, 10s open wait)
 - `RateLimitConfiguration.java` — `@Configuration` providing `Map<String, LimitConfig>` bean (sample limits for `/api/search` + `/api/ingest`) and `CircuitBreaker` bean

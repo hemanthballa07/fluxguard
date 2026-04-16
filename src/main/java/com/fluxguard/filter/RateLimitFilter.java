@@ -1,14 +1,13 @@
 package com.fluxguard.filter;
 
 import com.fluxguard.config.LimitConfig;
+import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.model.ClientIdentity;
 import com.fluxguard.model.RateLimitDecision;
 import com.fluxguard.redis.LuaScriptExecutor;
 import com.fluxguard.util.ClockProvider;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
@@ -34,6 +33,9 @@ import org.springframework.web.servlet.HandlerInterceptor;
  *   <li>On Redis failure or circuit open: fail-open (allow + log WARN + counter).</li>
  * </ol>
  *
+ * <p>Duration is recorded only when a real rate-limit decision was made (step 3).
+ * The 400 path (step 1) and unknown-path pass-through (step 2) do not record duration.
+ *
  * <p>This is the <em>only</em> class in the application that calls Redis for
  * rate-limiting decisions, per the architectural rule in CLAUDE.md.
  */
@@ -51,28 +53,15 @@ public class RateLimitFilter implements HandlerInterceptor {
     /** HTTP response header indicating when the client may retry after a 429. */
     private static final String HEADER_RETRY_AFTER = "Retry-After";
 
-    /** Micrometer counter name for fail-open events; tags distinguish reason. */
-    private static final String COUNTER_FAIL_OPEN = "redis.failopen.total";
-
-    /** Tag key used to distinguish fail-open trigger reasons. */
-    private static final String TAG_REASON = "reason";
-
-    /** Tag value when a {@link RuntimeException} from Redis triggers fail-open. */
-    private static final String REASON_REDIS_ERROR = "redis_error";
-
-    /** Tag value when an open circuit breaker triggers fail-open. */
-    private static final String REASON_CIRCUIT_OPEN = "circuit_open";
-
-    private static final int STATUS_BAD_REQUEST = 400;
-    private static final int STATUS_TOO_MANY_REQUESTS = 429;
-    private static final long MILLIS_PER_SECOND = 1000L;
+    private static final int  STATUS_BAD_REQUEST       = 400;
+    private static final int  STATUS_TOO_MANY_REQUESTS = 429;
+    private static final long MILLIS_PER_SECOND        = 1000L;
 
     private final LuaScriptExecutor executor;
     private final Map<String, LimitConfig> configByPath;
     private final ClockProvider clock;
     private final CircuitBreaker circuitBreaker;
-    private final Counter redisErrorCounter;
-    private final Counter circuitOpenCounter;
+    private final PrometheusMetricsCollector metrics;
 
     /**
      * Constructs the filter with all required collaborators.
@@ -81,26 +70,19 @@ public class RateLimitFilter implements HandlerInterceptor {
      * @param configByPath    exact-path-to-algorithm bindings
      * @param clock           injectable clock; never call {@code System.currentTimeMillis()} directly
      * @param circuitBreaker  Resilience4j circuit breaker wrapping Redis calls
-     * @param meterRegistry   Micrometer registry for fail-open counters
+     * @param metrics         Micrometer metrics facade for all rate-limit signals
      */
     public RateLimitFilter(
             final LuaScriptExecutor executor,
             final Map<String, LimitConfig> configByPath,
             final ClockProvider clock,
             final CircuitBreaker circuitBreaker,
-            final MeterRegistry meterRegistry) {
+            final PrometheusMetricsCollector metrics) {
         this.executor = executor;
         this.configByPath = configByPath;
         this.clock = clock;
         this.circuitBreaker = circuitBreaker;
-        this.redisErrorCounter = Counter.builder(COUNTER_FAIL_OPEN)
-            .tag(TAG_REASON, REASON_REDIS_ERROR)
-            .description("Requests allowed due to Redis unavailability")
-            .register(meterRegistry);
-        this.circuitOpenCounter = Counter.builder(COUNTER_FAIL_OPEN)
-            .tag(TAG_REASON, REASON_CIRCUIT_OPEN)
-            .description("Requests allowed because the circuit breaker is open")
-            .register(meterRegistry);
+        this.metrics = metrics;
     }
 
     /**
@@ -129,29 +111,61 @@ public class RateLimitFilter implements HandlerInterceptor {
         if (config == null) {
             return true;
         }
-        final ClientIdentity identity = ClientIdentity.of(clientId, path);
-        final RateLimitDecision decision = executeWithCircuitBreaker(identity, config);
-        return applyDecision(decision, response);
+        return executeAndApply(path, clientId, config, response);
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
 
-    private RateLimitDecision executeWithCircuitBreaker(
+    private boolean executeAndApply(
+            final String path,
+            final String clientId,
+            final LimitConfig config,
+            final HttpServletResponse response) {
+        final ClientIdentity identity = ClientIdentity.of(clientId, path);
+        final String algorithmName = config.algorithm().luaScriptName();
+        final long startNs = System.nanoTime();
+        final DecisionOutcome outcome = executeWithCircuitBreaker(identity, config);
+        recordMetrics(path, algorithmName, outcome, System.nanoTime() - startNs);
+        return applyDecision(outcome.decision(), response);
+    }
+
+    private void recordMetrics(
+            final String path,
+            final String algorithmName,
+            final DecisionOutcome outcome,
+            final long elapsedNs) {
+        metrics.recordDecisionDuration(path, algorithmName, outcome.resultLabel(), elapsedNs);
+        if (PrometheusMetricsCollector.RESULT_FAILOPEN.equals(outcome.resultLabel())) {
+            metrics.recordFailOpen(path, outcome.failOpenReason());
+        } else if (outcome.decision().allowed()) {
+            metrics.recordAllowed(path, algorithmName);
+        } else {
+            metrics.recordDenied(path, algorithmName);
+        }
+    }
+
+    private DecisionOutcome executeWithCircuitBreaker(
             final ClientIdentity identity,
             final LimitConfig config) {
         final Supplier<RateLimitDecision> decorated =
             CircuitBreaker.decorateSupplier(circuitBreaker, () -> callExecutor(identity, config));
         try {
-            return decorated.get();
+            final RateLimitDecision decision = decorated.get();
+            final String label = decision.allowed()
+                ? PrometheusMetricsCollector.RESULT_ALLOWED
+                : PrometheusMetricsCollector.RESULT_DENIED;
+            return new DecisionOutcome(decision, label, null);
         } catch (CallNotPermittedException ex) {
             LOG.warn("Rate-limit circuit open for path={} — failing open", identity.endpoint());
-            circuitOpenCounter.increment();
-            return RateLimitDecision.allow(0L);
+            return new DecisionOutcome(RateLimitDecision.allow(0L),
+                PrometheusMetricsCollector.RESULT_FAILOPEN,
+                PrometheusMetricsCollector.REASON_CIRCUIT_OPEN);
         } catch (RuntimeException ex) {
-            LOG.warn("Redis error for path={} — failing open: {}", identity.endpoint(),
-                ex.getMessage());
-            redisErrorCounter.increment();
-            return RateLimitDecision.allow(0L);
+            LOG.warn("Redis error for path={} — failing open: {}",
+                identity.endpoint(), ex.getMessage());
+            return new DecisionOutcome(RateLimitDecision.allow(0L),
+                PrometheusMetricsCollector.RESULT_FAILOPEN,
+                PrometheusMetricsCollector.REASON_REDIS_ERROR);
         }
     }
 
@@ -161,7 +175,8 @@ public class RateLimitFilter implements HandlerInterceptor {
         final long now = clock.nowMillis();
         final List<String> keys = config.algorithm().buildLuaKeys(identity.bucketKey(), now);
         final List<String> args = config.algorithm().buildLuaArgs(now);
-        final List<Object> result = executor.execute(config.algorithm().luaScriptName(), keys, args);
+        final List<Object> result =
+            executor.execute(config.algorithm().luaScriptName(), keys, args);
         return config.algorithm().parseResult(result);
     }
 
@@ -176,11 +191,18 @@ public class RateLimitFilter implements HandlerInterceptor {
             return true;
         }
         response.setStatus(STATUS_TOO_MANY_REQUESTS);
-        response.setHeader(HEADER_RETRY_AFTER, String.valueOf(ceilSeconds(decision.resetAfterMs())));
+        response.setHeader(HEADER_RETRY_AFTER,
+            String.valueOf(ceilSeconds(decision.resetAfterMs())));
         return false;
     }
 
     private long ceilSeconds(final long ms) {
         return (long) Math.ceil((double) ms / MILLIS_PER_SECOND);
     }
+
+    /** Internal DTO carrying a rate-limit decision together with its metrics labels. */
+    private record DecisionOutcome(
+            RateLimitDecision decision,
+            String resultLabel,
+            String failOpenReason) { }
 }

@@ -2,11 +2,13 @@ package com.fluxguard.filter;
 
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.exception.RedisUnavailableException;
+import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.redis.LuaScriptExecutor;
 import com.fluxguard.util.ClockProvider;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
 import java.util.Map;
@@ -34,56 +36,40 @@ import static org.mockito.Mockito.when;
  * {@link LuaScriptExecutor} is mocked with Mockito.
  * A real Resilience4j {@link CircuitBreaker} is used so circuit-state transitions
  * can be verified by calling {@link CircuitBreaker#transitionToOpenState()}.
+ * A {@link SimpleMeterRegistry} drives both {@link PrometheusMetricsCollector}
+ * and all counter/timer assertions.
  */
 class RateLimitFilterTest {
 
-    private static final String CLIENT_ID_HEADER = "X-Client-ID";
-    private static final String REMAINING_HEADER = "X-RateLimit-Remaining";
+    private static final String CLIENT_ID_HEADER  = "X-Client-ID";
+    private static final String REMAINING_HEADER  = "X-RateLimit-Remaining";
     private static final String RETRY_AFTER_HEADER = "Retry-After";
-    private static final String KNOWN_PATH = "/api/test";
-    private static final String UNKNOWN_PATH = "/api/unknown";
-    private static final String CLIENT_ID = "client-abc";
+    private static final String KNOWN_PATH        = "/api/test";
+    private static final String UNKNOWN_PATH      = "/api/unknown";
+    private static final String CLIENT_ID         = "client-abc";
 
-    /** Limit and window for the test endpoint config. */
-    private static final long TEST_LIMIT = 10L;
-    private static final long TEST_WINDOW_MS = 60_000L;
+    private static final long   TEST_LIMIT        = 10L;
+    private static final long   TEST_WINDOW_MS    = 60_000L;
+    private static final long   MOCK_REMAINING    = 7L;
+    private static final long   MOCK_RESET_MS     = 30_000L;
 
-    /** Remaining tokens returned by a mock allow decision. */
-    private static final long MOCK_REMAINING = 7L;
-
-    /** Reset hint in ms returned by a mock deny decision; 30 000 ms = 30 s. */
-    private static final long MOCK_RESET_MS = 30_000L;
-
-    /** Expected Retry-After header value in seconds (ceil of MOCK_RESET_MS / 1000). */
     private static final String EXPECTED_RETRY_AFTER_SECONDS = "30";
+    private static final int    STATUS_OK          = 200;
+    private static final int    STATUS_BAD_REQUEST  = 400;
+    private static final int    STATUS_TOO_MANY     = 429;
+    private static final double COUNTER_DELTA       = 0.001;
 
-    /** HTTP 200 OK status code. */
-    private static final int STATUS_OK = 200;
+    private static final int  CB_FAILURE_RATE_THRESHOLD = 100;
+    private static final int  CB_MIN_CALLS              = 100;
+    private static final long FIXED_NOW_MS              = 1_000_000L;
 
-    /** HTTP 400 Bad Request status code. */
-    private static final int STATUS_BAD_REQUEST = 400;
-
-    /** HTTP 429 Too Many Requests status code. */
-    private static final int STATUS_TOO_MANY = 429;
-
-    /** Delta for double equality assertions on counter values. */
-    private static final double COUNTER_DELTA = 0.001;
-
-    /**
-     * High failure-rate threshold for the test circuit breaker, preventing it from
-     * opening during normal tests (requires 100% failure rate across 100 calls).
-     */
-    private static final int CB_FAILURE_RATE_THRESHOLD = 100;
-
-    /** Minimum number of calls the test CB requires before evaluating failure rate. */
-    private static final int CB_MIN_CALLS = 100;
-
-    /** Fixed epoch timestamp used for ClockProvider stub. */
-    private static final long FIXED_NOW_MS = 1_000_000L;
+    /** Algorithm name returned by {@code SlidingWindowAlgorithm.luaScriptName()}. */
+    private static final String ALGORITHM_NAME = "sliding_window";
 
     private LuaScriptExecutor mockExecutor;
     private ClockProvider mockClock;
     private SimpleMeterRegistry meterRegistry;
+    private PrometheusMetricsCollector collector;
     private CircuitBreaker circuitBreaker;
     private RateLimitFilter filter;
 
@@ -91,12 +77,12 @@ class RateLimitFilterTest {
     @BeforeEach
     void setUp() {
         mockExecutor = mock(LuaScriptExecutor.class);
-        mockClock = mock(ClockProvider.class);
+        mockClock    = mock(ClockProvider.class);
         when(mockClock.nowMillis()).thenReturn(FIXED_NOW_MS);
 
         meterRegistry = new SimpleMeterRegistry();
+        collector     = new PrometheusMetricsCollector(meterRegistry);
 
-        // CB with high thresholds so it never opens unexpectedly during normal tests
         final CircuitBreakerConfig cbConfig = CircuitBreakerConfig.custom()
             .failureRateThreshold(CB_FAILURE_RATE_THRESHOLD)
             .minimumNumberOfCalls(CB_MIN_CALLS)
@@ -107,12 +93,11 @@ class RateLimitFilterTest {
             KNOWN_PATH, LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)
         );
 
-        // Stub executor to return a valid Lua result list for the known path
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
 
         filter = new RateLimitFilter(
-            mockExecutor, configs, mockClock, circuitBreaker, meterRegistry);
+            mockExecutor, configs, mockClock, circuitBreaker, collector);
     }
 
     // ── 400 Bad Request ───────────────────────────────────────────────────────
@@ -142,7 +127,7 @@ class RateLimitFilterTest {
         verify(mockExecutor, never()).execute(any(), any(), any());
     }
 
-    // ── Unknown path (fail-open) ──────────────────────────────────────────────
+    // ── Unknown path (no limiting) ────────────────────────────────────────────
 
     @Test
     void unknownEndpointSkipsLimitingAndProceed() throws Exception {
@@ -181,8 +166,6 @@ class RateLimitFilterTest {
 
     @Test
     void remainingHeaderNotSetWhenRemainingIsNegative() throws Exception {
-        // Simulate fail-open returning remaining=0 (the sentinel we use for fail-open)
-        // Additional edge: force remaining = -1 via a custom executor response
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenReturn(List.of(1L, -1L, 0L));
         final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
@@ -223,7 +206,6 @@ class RateLimitFilterTest {
 
     @Test
     void retryAfterRoundsUpSubSecondValues() throws Exception {
-        // 1 ms deny → ceil(1/1000) = 1 second, not 0
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenReturn(List.of(0L, 0L, 1L));
         final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
@@ -233,6 +215,75 @@ class RateLimitFilterTest {
 
         assertEquals("1", res.getHeader(RETRY_AFTER_HEADER),
             "Sub-second reset hint must round up to at least 1 second");
+    }
+
+    // ── Allow / Deny counters ─────────────────────────────────────────────────
+
+    @Test
+    void allowedRequestIncrementsAllowedCounter() throws Exception {
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        assertEquals(1.0, getAllowedCount(KNOWN_PATH, ALGORITHM_NAME), COUNTER_DELTA);
+        assertEquals(0.0, getDeniedCount(KNOWN_PATH, ALGORITHM_NAME), COUNTER_DELTA);
+    }
+
+    @Test
+    void deniedRequestIncrementsDeniedCounter() throws Exception {
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(0L, 0L, MOCK_RESET_MS));
+
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        assertEquals(1.0, getDeniedCount(KNOWN_PATH, ALGORITHM_NAME), COUNTER_DELTA);
+        assertEquals(0.0, getAllowedCount(KNOWN_PATH, ALGORITHM_NAME), COUNTER_DELTA);
+    }
+
+    // ── Duration histogram ────────────────────────────────────────────────────
+
+    @Test
+    void allowedRequestRecordsDurationTimer() throws Exception {
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        final Timer timer = getDecisionTimer(
+            KNOWN_PATH, ALGORITHM_NAME, PrometheusMetricsCollector.RESULT_ALLOWED);
+        assertTrue(timer != null && timer.count() == 1L,
+            "Duration timer must record one sample for an allowed request");
+    }
+
+    @Test
+    void deniedRequestRecordsDurationTimer() throws Exception {
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(0L, 0L, MOCK_RESET_MS));
+
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        final Timer timer = getDecisionTimer(
+            KNOWN_PATH, ALGORITHM_NAME, PrometheusMetricsCollector.RESULT_DENIED);
+        assertTrue(timer != null && timer.count() == 1L,
+            "Duration timer must record one sample for a denied request");
+    }
+
+    @Test
+    void missingHeaderDoesNotRecordDuration() throws Exception {
+        filter.preHandle(buildRequest(KNOWN_PATH), new MockHttpServletResponse(), new Object());
+
+        assertNull(
+            meterRegistry.find(PrometheusMetricsCollector.METRIC_DECISION_DUR).timer(),
+            "Duration timer must NOT be registered when request is rejected for missing header");
+    }
+
+    @Test
+    void unknownPathDoesNotRecordDuration() throws Exception {
+        filter.preHandle(buildRequestWithClient(UNKNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        assertNull(
+            meterRegistry.find(PrometheusMetricsCollector.METRIC_DECISION_DUR).timer(),
+            "Duration timer must NOT be registered for unknown (unlimted) path");
     }
 
     // ── Fail-open: Redis error ────────────────────────────────────────────────
@@ -254,24 +305,24 @@ class RateLimitFilterTest {
     void redisUnavailableExceptionIncrementsRedisErrorCounter() throws Exception {
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenThrow(new RedisUnavailableException("timeout"));
-        final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
-        final MockHttpServletResponse res = new MockHttpServletResponse();
 
-        filter.preHandle(req, res, new Object());
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
 
-        final double count = getFailOpenCount("redis_error");
-        assertEquals(1.0, count, COUNTER_DELTA, "redis_error counter must increment once");
+        assertEquals(1.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_REDIS_ERROR), COUNTER_DELTA);
     }
 
     @Test
     void circuitOpenCounterNotIncrementedOnRedisError() throws Exception {
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenThrow(new RedisUnavailableException("timeout"));
-        final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
 
-        filter.preHandle(req, new MockHttpServletResponse(), new Object());
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
 
-        assertEquals(0.0, getFailOpenCount("circuit_open"), COUNTER_DELTA);
+        assertEquals(0.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_CIRCUIT_OPEN), COUNTER_DELTA);
     }
 
     // ── Fail-open: circuit breaker open ──────────────────────────────────────
@@ -292,12 +343,28 @@ class RateLimitFilterTest {
     @Test
     void circuitBreakerOpenIncrementsCircuitOpenCounter() throws Exception {
         circuitBreaker.transitionToOpenState();
-        final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
 
-        filter.preHandle(req, new MockHttpServletResponse(), new Object());
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
 
-        assertEquals(1.0, getFailOpenCount("circuit_open"), COUNTER_DELTA);
-        assertEquals(0.0, getFailOpenCount("redis_error"), COUNTER_DELTA);
+        assertEquals(1.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_CIRCUIT_OPEN), COUNTER_DELTA);
+        assertEquals(0.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_REDIS_ERROR), COUNTER_DELTA);
+    }
+
+    @Test
+    void failOpenRecordsDurationTimer() throws Exception {
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenThrow(new RedisUnavailableException("timeout"));
+
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        final Timer timer = getDecisionTimer(
+            KNOWN_PATH, ALGORITHM_NAME, PrometheusMetricsCollector.RESULT_FAILOPEN);
+        assertTrue(timer != null && timer.count() == 1L,
+            "Duration timer must record one sample for a fail-open request");
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -314,10 +381,36 @@ class RateLimitFilterTest {
         return req;
     }
 
-    private double getFailOpenCount(final String reason) {
-        final Counter counter = meterRegistry.find("redis.failopen.total")
-            .tag("reason", reason)
+    private double getFailOpenCount(final String endpoint, final String reason) {
+        final Counter c = meterRegistry.find(PrometheusMetricsCollector.METRIC_FAILOPEN)
+            .tag(PrometheusMetricsCollector.TAG_ENDPOINT, endpoint)
+            .tag(PrometheusMetricsCollector.TAG_REASON, reason)
             .counter();
-        return counter == null ? 0.0 : counter.count();
+        return c == null ? 0.0 : c.count();
+    }
+
+    private double getAllowedCount(final String endpoint, final String algorithm) {
+        final Counter c = meterRegistry.find(PrometheusMetricsCollector.METRIC_ALLOWED)
+            .tag(PrometheusMetricsCollector.TAG_ENDPOINT, endpoint)
+            .tag(PrometheusMetricsCollector.TAG_ALGORITHM, algorithm)
+            .counter();
+        return c == null ? 0.0 : c.count();
+    }
+
+    private double getDeniedCount(final String endpoint, final String algorithm) {
+        final Counter c = meterRegistry.find(PrometheusMetricsCollector.METRIC_DENIED)
+            .tag(PrometheusMetricsCollector.TAG_ENDPOINT, endpoint)
+            .tag(PrometheusMetricsCollector.TAG_ALGORITHM, algorithm)
+            .counter();
+        return c == null ? 0.0 : c.count();
+    }
+
+    private Timer getDecisionTimer(
+            final String endpoint, final String algorithm, final String result) {
+        return meterRegistry.find(PrometheusMetricsCollector.METRIC_DECISION_DUR)
+            .tag(PrometheusMetricsCollector.TAG_ENDPOINT, endpoint)
+            .tag(PrometheusMetricsCollector.TAG_ALGORITHM, algorithm)
+            .tag(PrometheusMetricsCollector.TAG_RESULT, result)
+            .timer();
     }
 }

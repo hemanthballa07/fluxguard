@@ -1,6 +1,7 @@
 package com.fluxguard.redis;
 
 import com.fluxguard.exception.RedisUnavailableException;
+import com.fluxguard.metrics.PrometheusMetricsCollector;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,6 +37,7 @@ public class LuaScriptExecutor {
     private static final String SCRIPT_EXT = ".lua";
 
     private final StringRedisTemplate redisTemplate;
+    private final PrometheusMetricsCollector metrics;
 
     /**
      * Thread-safe cache of compiled {@link RedisScript} instances, keyed by script name.
@@ -45,13 +47,17 @@ public class LuaScriptExecutor {
     private final Map<String, RedisScript<List>> scriptCache = new ConcurrentHashMap<>();
 
     /**
-     * Constructs a {@code LuaScriptExecutor} with the given Redis template.
+     * Constructs a {@code LuaScriptExecutor} with the given Redis template and metrics collector.
      *
      * @param redisTemplate Spring Data Redis template configured with string
      *                      serializers; must not be {@code null}
+     * @param metrics       collector used to record Redis script execution duration
      */
-    public LuaScriptExecutor(final StringRedisTemplate redisTemplate) {
+    public LuaScriptExecutor(
+            final StringRedisTemplate redisTemplate,
+            final PrometheusMetricsCollector metrics) {
         this.redisTemplate = redisTemplate;
+        this.metrics = metrics;
     }
 
     /**
@@ -78,8 +84,10 @@ public class LuaScriptExecutor {
             final List<String> keys,
             final List<String> args) {
         final RedisScript<List> script = resolveScript(scriptName);
+        final long startNs = System.nanoTime();
         final List<Object> result =
             (List<Object>) redisTemplate.execute(script, keys, args.toArray());
+        metrics.recordScriptDuration(scriptName, System.nanoTime() - startNs);
         if (result == null) {
             throw new RedisUnavailableException(
                 "Redis returned null for script: " + scriptName);
