@@ -1,0 +1,7 @@
+target/
+*.class
+*.jar
+.env
+*.log
+k6/results/
+.DS_Store

@@ -1,0 +1,53 @@
+spring:
+  application:
+    name: fluxguard
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # Hard ceiling from CLAUDE.md architectural rules: 50 ms max.
+      timeout: 50ms
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 2
+          time-between-eviction-runs: 30s
+
+server:
+  port: 8080
+
+# Expose health, info, Prometheus scrape endpoint, and generic metrics.
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      redis-rate-limit:
+        sliding-window-type: TIME_BASED
+        sliding-window-size: 10
+        failure-rate-threshold: 50
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 10s
+        permitted-number-of-calls-in-half-open-state: 3
+        record-exceptions:
+          - com.fluxguard.exception.RedisUnavailableException
+          - org.springframework.data.redis.RedisConnectionFailureException
+          - org.springframework.data.redis.RedisSystemException
+
+# Structured logs: include trace/span IDs for OTel correlation.
+logging:
+  level:
+    com.fluxguard: INFO
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} trace_id=%X{traceId} span_id=%X{spanId} - %msg%n"
