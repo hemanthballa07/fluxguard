@@ -2,6 +2,11 @@ package com.fluxguard.redis;
 
 import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -36,8 +41,18 @@ public class LuaScriptExecutor {
     /** File extension appended to the script name when resolving from classpath. */
     private static final String SCRIPT_EXT = ".lua";
 
+    /** Span name used for Redis Lua script execution traces. */
+    private static final String SPAN_REDIS_SCRIPT = "redis.lua_script";
+
+    /** Span attribute key for the Lua script name. */
+    private static final String TAG_SCRIPT_NAME = "script_name";
+
+    /** Span attribute key for the number of Redis keys sent to the script. */
+    private static final String TAG_KEY_COUNT = "key_count";
+
     private final StringRedisTemplate redisTemplate;
     private final PrometheusMetricsCollector metrics;
+    private final Tracer tracer;
 
     /**
      * Thread-safe cache of compiled {@link RedisScript} instances, keyed by script name.
@@ -47,17 +62,21 @@ public class LuaScriptExecutor {
     private final Map<String, RedisScript<List>> scriptCache = new ConcurrentHashMap<>();
 
     /**
-     * Constructs a {@code LuaScriptExecutor} with the given Redis template and metrics collector.
+     * Constructs a {@code LuaScriptExecutor} with the given Redis template, metrics collector,
+     * and tracer.
      *
      * @param redisTemplate Spring Data Redis template configured with string
      *                      serializers; must not be {@code null}
      * @param metrics       collector used to record Redis script execution duration
+     * @param tracer        tracer used to create Redis script execution spans
      */
     public LuaScriptExecutor(
             final StringRedisTemplate redisTemplate,
-            final PrometheusMetricsCollector metrics) {
+            final PrometheusMetricsCollector metrics,
+            final Tracer tracer) {
         this.redisTemplate = redisTemplate;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     /**
@@ -84,15 +103,25 @@ public class LuaScriptExecutor {
             final List<String> keys,
             final List<String> args) {
         final RedisScript<List> script = resolveScript(scriptName);
-        final long startNs = System.nanoTime();
-        final List<Object> result =
-            (List<Object>) redisTemplate.execute(script, keys, args.toArray());
-        metrics.recordScriptDuration(scriptName, System.nanoTime() - startNs);
-        if (result == null) {
-            throw new RedisUnavailableException(
-                "Redis returned null for script: " + scriptName);
+        final Span span = tracer.spanBuilder(SPAN_REDIS_SCRIPT)
+            .setSpanKind(SpanKind.CLIENT)
+            .startSpan();
+        try (Scope ignored = span.makeCurrent()) {
+            span.setAttribute(TAG_SCRIPT_NAME, scriptName);
+            span.setAttribute(TAG_KEY_COUNT, keys.size());
+            final long startNs = System.nanoTime();
+            final List<Object> result =
+                (List<Object>) redisTemplate.execute(script, keys, args.toArray());
+            metrics.recordScriptDuration(scriptName, System.nanoTime() - startNs);
+            if (result == null) {
+                span.setStatus(StatusCode.ERROR, "Redis returned null");
+                throw new RedisUnavailableException(
+                    "Redis returned null for script: " + scriptName);
+            }
+            return result;
+        } finally {
+            span.end();
         }
-        return result;
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

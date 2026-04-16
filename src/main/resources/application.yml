@@ -51,3 +51,10 @@ logging:
     com.fluxguard: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} trace_id=%X{traceId} span_id=%X{spanId} - %msg%n"
+
+otel:
+  exporter:
+    otlp:
+      endpoint: http://jaeger:4317
+  traces:
+    sampler: always_on
