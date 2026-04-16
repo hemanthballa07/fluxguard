@@ -5,6 +5,7 @@ import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.redis.LuaScriptExecutor;
 import com.fluxguard.util.ClockProvider;
+import io.opentelemetry.api.OpenTelemetry;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
 import io.micrometer.core.instrument.Counter;
@@ -97,7 +98,8 @@ class RateLimitFilterTest {
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
 
         filter = new RateLimitFilter(
-            mockExecutor, configs, mockClock, circuitBreaker, collector);
+            mockExecutor, configs, mockClock, circuitBreaker, collector,
+            OpenTelemetry.noop().getTracer("test"));
     }
 
     // ── 400 Bad Request ───────────────────────────────────────────────────────

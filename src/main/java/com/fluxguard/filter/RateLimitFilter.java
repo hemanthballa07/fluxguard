@@ -8,6 +8,11 @@ import com.fluxguard.redis.LuaScriptExecutor;
 import com.fluxguard.util.ClockProvider;
 import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.SpanKind;
+import io.opentelemetry.api.trace.StatusCode;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Scope;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
@@ -53,6 +58,30 @@ public class RateLimitFilter implements HandlerInterceptor {
     /** HTTP response header indicating when the client may retry after a 429. */
     private static final String HEADER_RETRY_AFTER = "Retry-After";
 
+    /** Span name used for the full rate-limit decision flow. */
+    private static final String SPAN_RATE_LIMIT_DECISION = "rate_limit.decision";
+
+    /** Span attribute key for the HTTP endpoint being rate limited. */
+    private static final String TAG_ENDPOINT = "endpoint";
+
+    /** Span attribute key for the client identifier driving the decision. */
+    private static final String TAG_CLIENT_ID = "client.id";
+
+    /** Span attribute key for the algorithm used for the decision. */
+    private static final String TAG_ALGORITHM = "algorithm";
+
+    /** Span attribute key for the final business decision label. */
+    private static final String TAG_DECISION = "decision";
+
+    /** Span attribute key for the fail-open reason when applicable. */
+    private static final String TAG_FAIL_OPEN_REASON = "fail_open_reason";
+
+    /** Span attribute key for the remaining capacity on an allowed decision. */
+    private static final String TAG_RATE_LIMIT_REMAINING = "rate_limit.remaining";
+
+    /** Span attribute key for reset delay on a denied decision. */
+    private static final String TAG_RATE_LIMIT_RESET_AFTER_MS = "rate_limit.reset_after_ms";
+
     private static final int  STATUS_BAD_REQUEST       = 400;
     private static final int  STATUS_TOO_MANY_REQUESTS = 429;
     private static final long MILLIS_PER_SECOND        = 1000L;
@@ -62,6 +91,7 @@ public class RateLimitFilter implements HandlerInterceptor {
     private final ClockProvider clock;
     private final CircuitBreaker circuitBreaker;
     private final PrometheusMetricsCollector metrics;
+    private final Tracer tracer;
 
     /**
      * Constructs the filter with all required collaborators.
@@ -71,18 +101,21 @@ public class RateLimitFilter implements HandlerInterceptor {
      * @param clock           injectable clock; never call {@code System.currentTimeMillis()} directly
      * @param circuitBreaker  Resilience4j circuit breaker wrapping Redis calls
      * @param metrics         Micrometer metrics facade for all rate-limit signals
+     * @param tracer          tracer used to create rate-limit decision spans
      */
     public RateLimitFilter(
             final LuaScriptExecutor executor,
             final Map<String, LimitConfig> configByPath,
             final ClockProvider clock,
             final CircuitBreaker circuitBreaker,
-            final PrometheusMetricsCollector metrics) {
+            final PrometheusMetricsCollector metrics,
+            final Tracer tracer) {
         this.executor = executor;
         this.configByPath = configByPath;
         this.clock = clock;
         this.circuitBreaker = circuitBreaker;
         this.metrics = metrics;
+        this.tracer = tracer;
     }
 
     /**
@@ -123,10 +156,18 @@ public class RateLimitFilter implements HandlerInterceptor {
             final HttpServletResponse response) {
         final ClientIdentity identity = ClientIdentity.of(clientId, path);
         final String algorithmName = config.algorithm().luaScriptName();
-        final long startNs = System.nanoTime();
-        final DecisionOutcome outcome = executeWithCircuitBreaker(identity, config);
-        recordMetrics(path, algorithmName, outcome, System.nanoTime() - startNs);
-        return applyDecision(outcome.decision(), response);
+        final Span span = tracer.spanBuilder(SPAN_RATE_LIMIT_DECISION)
+            .setSpanKind(SpanKind.INTERNAL)
+            .startSpan();
+        try (Scope ignored = span.makeCurrent()) {
+            final long startNs = System.nanoTime();
+            final DecisionOutcome outcome = executeWithCircuitBreaker(identity, config);
+            recordMetrics(path, algorithmName, outcome, System.nanoTime() - startNs);
+            annotateSpan(span, clientId, path, algorithmName, outcome);
+            return applyDecision(outcome.decision(), response);
+        } finally {
+            span.end();
+        }
     }
 
     private void recordMetrics(
@@ -142,6 +183,38 @@ public class RateLimitFilter implements HandlerInterceptor {
         } else {
             metrics.recordDenied(path, algorithmName);
         }
+    }
+
+    private void annotateSpan(
+            final Span span,
+            final String clientId,
+            final String path,
+            final String algorithmName,
+            final DecisionOutcome outcome) {
+        final String decision = outcome.resultLabel();
+        span.setAttribute(TAG_CLIENT_ID, clientId);
+        span.setAttribute(TAG_ENDPOINT, path);
+        span.setAttribute(TAG_ALGORITHM, algorithmName);
+        span.setAttribute(TAG_DECISION, decision);
+        if (PrometheusMetricsCollector.RESULT_ALLOWED.equals(decision)) {
+            span.setAttribute(TAG_RATE_LIMIT_REMAINING, outcome.decision().remainingTokens());
+            span.setStatus(StatusCode.OK);
+            return;
+        }
+        if (PrometheusMetricsCollector.RESULT_DENIED.equals(decision)) {
+            span.setAttribute(TAG_RATE_LIMIT_RESET_AFTER_MS, outcome.decision().resetAfterMs());
+            span.setStatus(StatusCode.OK);
+            return;
+        }
+        if (PrometheusMetricsCollector.REASON_REDIS_ERROR.equals(outcome.failOpenReason())) {
+            span.setAttribute(TAG_FAIL_OPEN_REASON, outcome.failOpenReason());
+            span.setStatus(StatusCode.ERROR, "Redis failure - failing open");
+            return;
+        }
+        if (outcome.failOpenReason() != null) {
+            span.setAttribute(TAG_FAIL_OPEN_REASON, outcome.failOpenReason());
+        }
+        span.setStatus(StatusCode.OK);
     }
 
     private DecisionOutcome executeWithCircuitBreaker(
