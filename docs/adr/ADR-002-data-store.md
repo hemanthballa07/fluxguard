@@ -18,8 +18,8 @@ Must support atomic increments, TTL expiry, sub-10ms p99.
 **Risks:** Redis outage blocks requests without fail-open — mitigated by ADR-003.
 
 ## Alternatives considered
-| Alternative | Why rejected |
-|-------------|-------------|
-| DynamoDB | 10-20ms latency — too slow per-request |
-| Local in-memory | No shared state across ECS instances |
-| Memcached | No Lua scripting, no replication |
+| Alternative     | Why rejected                           |
+|-----------------|----------------------------------------|
+| DynamoDB        | 10-20ms latency — too slow per-request |
+| Local in-memory | No shared state across ECS instances   |
+| Memcached       | No Lua scripting, no replication       |

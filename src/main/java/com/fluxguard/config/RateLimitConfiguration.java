@@ -2,6 +2,8 @@ package com.fluxguard.config;
 
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import java.util.Map;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -63,5 +65,16 @@ public class RateLimitConfiguration {
     @Bean
     public CircuitBreaker redisCircuitBreaker(final CircuitBreakerRegistry registry) {
         return registry.circuitBreaker(CIRCUIT_BREAKER_NAME);
+    }
+
+    /**
+     * Provides the application tracer used for Week 7 decision and Redis script spans.
+     *
+     * @param openTelemetry auto-configured OpenTelemetry entrypoint from the starter
+     * @return tracer scoped to the FluxGuard application
+     */
+    @Bean
+    public Tracer tracer(final OpenTelemetry openTelemetry) {
+        return openTelemetry.getTracer("fluxguard");
     }
 }

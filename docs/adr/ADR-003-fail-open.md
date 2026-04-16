@@ -19,10 +19,10 @@ Redis timeout ceiling: 50ms. Resilience4j circuit breaker wraps all Redis calls.
 **Risks:** Sustained outage = sustained unenforced limits. Alert on redis_failopen_total spike.
 
 ## Alternatives considered
-| Alternative | Why rejected |
-|-------------|-------------|
-| Fail-closed | Full API outage on Redis failure — unacceptable |
-| Local fallback counter | State inconsistency across instances |
+| Alternative            | Why rejected                                    |
+|------------------------|-------------------------------------------------|
+| Fail-closed            | Full API outage on Redis failure — unacceptable |
+| Local fallback counter | State inconsistency across instances            |
 
 ## References
 - Stripe: "exceptions fail open so the API stays functional"

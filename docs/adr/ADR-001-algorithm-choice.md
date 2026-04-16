@@ -23,11 +23,11 @@ Switchable per-endpoint via LimitConfig — never hardcoded.
 **Risks:** Clock skew affects refill timing — mitigated via ClockProvider + Redis server time.
 
 ## Alternatives considered
-| Alternative | Why rejected |
-|-------------|-------------|
-| Fixed window | Double-capacity burst at window edges |
-| Sliding window log | O(R) memory per client — does not scale |
-| Leaky bucket | No burst tolerance — too strict for API workloads |
+| Alternative        | Why rejected                                      |
+|--------------------|---------------------------------------------------|
+| Fixed window       | Double-capacity burst at window edges             |
+| Sliding window log | O(R) memory per client — does not scale           |
+| Leaky bucket       | No burst tolerance — too strict for API workloads |
 
 ## References
 - Stripe engineering blog: token bucket for API rate limiting

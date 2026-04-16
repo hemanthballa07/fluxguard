@@ -50,11 +50,12 @@ logging:
   level:
     com.fluxguard: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} trace_id=%X{traceId} span_id=%X{spanId} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} trace_id=%X{trace_id} span_id=%X{span_id} - %msg%n"
 
 otel:
   exporter:
     otlp:
       endpoint: http://jaeger:4317
+      protocol: grpc
   traces:
     sampler: always_on

@@ -42,3 +42,21 @@ otel:
 - tracing tests
 - `mvn compile` / `mvn test` / `mvn verify`
 - Jaeger parent-child trace verification
+
+## Final Week 7 State
+- Week 7 tracing is now implemented and verified.
+- Production tracing changes were made in:
+  - `src/main/java/com/fluxguard/filter/RateLimitFilter.java`
+  - `src/main/java/com/fluxguard/redis/LuaScriptExecutor.java`
+  - `src/main/java/com/fluxguard/config/RateLimitConfiguration.java`
+- Test changes were made in:
+  - `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java`
+  - `src/test/java/com/fluxguard/filter/RateLimitFilterTracingTest.java`
+  - `src/test/java/com/fluxguard/redis/LuaScriptExecutorTracingTest.java`
+- Verification results:
+  - `mvn compile` passed
+  - `mvn test` passed
+  - `mvn verify` passed
+  - Jaeger API query confirmed `rate_limit.decision` as parent of `redis.lua_script`
+- OTLP note:
+  - For local Jaeger verification, `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and `OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317` were used to target the live Jaeger collector.

@@ -119,6 +119,9 @@ public class LuaScriptExecutor {
                     "Redis returned null for script: " + scriptName);
             }
             return result;
+        } catch (RuntimeException ex) {
+            span.setStatus(StatusCode.ERROR, ex.getMessage());
+            throw ex;
         } finally {
             span.end();
         }

@@ -5,6 +5,31 @@
 
 ---
 
+## [2026-04-16] — Week 7 — OTLP gRPC fix + log pattern correction
+- `application.yml` — added `protocol: grpc` under `otel.exporter.otlp`; OTel starter requires explicit protocol to use gRPC (port 4317) instead of defaulting to http/protobuf (port 4318)
+- `application.yml` — fixed log pattern MDC keys: `%X{traceId}` → `%X{trace_id}`, `%X{spanId}` → `%X{span_id}`; OTel uses snake_case MDC keys, not Micrometer-style camelCase
+- Jaeger E2E verification passed: `rate_limit.decision` and `redis.lua_script` spans confirmed for service `fluxguard`
+- Known gap logged: log `trace_id=` remains empty — `opentelemetry-logback-mdc-1.0` MDC bridge dep + `logback-spring.xml` needed; deferred to Month 2 cleanup
+- Test counts corrected: 90 total (83 unit + 7 IT)
+
+## [2026-04-16] — Week 1 — pom.xml resolved clean
+- `pom.xml` re-initialized: Spring Boot 3.4.1 parent, `opentelemetry-instrumentation-bom` 2.25.0 imported explicitly, Resilience4j 2.3.0 pinned, Testcontainers 1.21.4, JaCoCo 0.8.14, Checkstyle 3.6.0
+- `checkstyle/checkstyle.xml` scaffolded with CLAUDE.md rules (Javadoc on public methods, max 30-line methods, no magic numbers)
+- `mvn dependency:resolve` — BUILD SUCCESS, no conflicts
+
+## [2026-04-16] — Week 7 — OpenTelemetry tracing implemented and verified
+- `RateLimitFilter.java` — added parent span `rate_limit.decision` with `SpanKind.INTERNAL`; span is current before `LuaScriptExecutor.execute()`; attributes include `client.id`, `endpoint`, `algorithm`, `decision`, and `rate_limit.remaining` / `rate_limit.reset_after_ms` when applicable; `redis_error` fail-open marks span `ERROR`, `circuit_open` remains `OK`
+- `LuaScriptExecutor.java` — added child span `redis.lua_script` with `SpanKind.CLIENT`; attributes include `script_name` and `key_count`; `metrics.recordScriptDuration()` remains before the null check; span ends in `finally`
+- `RateLimitConfiguration.java` — added `Tracer` bean backed by auto-configured `OpenTelemetry` so the updated constructors wire in the full Spring context
+- `RateLimitFilterTest.java` — updated constructor wiring to pass `OpenTelemetry.noop().getTracer("test")`
+- `RateLimitFilterTracingTest.java` (new) — parent span tests covering allow, deny, `redis_error` fail-open, `circuit_open` fail-open, current-span propagation, and no-span paths
+- `LuaScriptExecutorTracingTest.java` (new) — child span tests covering attributes, null-result error handling, and parent-child linkage
+- Verification:
+  - `mvn compile` ✅
+  - `mvn test` ✅
+  - `mvn verify` ✅
+  - Jaeger API query confirmed `rate_limit.decision` → `redis.lua_script` parent-child traces for service `fluxguard` ✅
+
 ## [2026-04-15] — Week 6 — Grafana compatibility fix: pinned to 11.4.0
 - `docker/docker-compose.yml` — changed `grafana/grafana:latest` to `grafana/grafana:11.4.0`; Grafana 13 (`latest`) uses unified storage mode 5 which routes dashboard reads through a new K8s-style API (`/apis/dashboard.grafana.app/v2/`) and returns 404 on the legacy `/api/dashboards/uid/:uid` endpoint; 11.4.0 uses the standard file provisioner and REST API
 - Verified end-to-end: `fg-traffic` → `FluxGuard Traffic Overview`, `fg-internals` → `FluxGuard Limiter Internals`, `fg-perclient` → `FluxGuard Per Client`; datasource proxy returns `"status":"success"` for `rate_limit_allowed_total`
