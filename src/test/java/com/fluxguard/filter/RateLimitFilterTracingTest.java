@@ -1,6 +1,7 @@
 package com.fluxguard.filter;
 
 import com.fluxguard.config.ConfigService;
+import com.fluxguard.config.FeatureFlagService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
@@ -90,7 +91,8 @@ class RateLimitFilterTracingTest {
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
         circuitBreaker = CircuitBreaker.of("test-cb", circuitBreakerConfig());
         filter = new RateLimitFilter(
-            mockExecutor, stubConfigService(), mockClock, circuitBreaker, collector(), tracer);
+            mockExecutor, stubConfigService(), stubFlagService(),
+            mockClock, circuitBreaker, collector(), tracer);
     }
 
     @AfterEach
@@ -219,6 +221,13 @@ class RateLimitFilterTracingTest {
         final MockHttpServletRequest req = buildRequest(path);
         req.addHeader(CLIENT_ID_HEADER, CLIENT_ID);
         return req;
+    }
+
+    private FeatureFlagService stubFlagService() {
+        final FeatureFlagService stub = org.mockito.Mockito.mock(FeatureFlagService.class);
+        org.mockito.Mockito.when(stub.getFlagForEndpoint(anyString()))
+            .thenReturn(Optional.empty());
+        return stub;
     }
 
     private ConfigService stubConfigService() {

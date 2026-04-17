@@ -1,9 +1,11 @@
 package com.fluxguard.filter;
 
 import com.fluxguard.config.ConfigService;
+import com.fluxguard.config.FeatureFlagService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.model.ClientIdentity;
+import com.fluxguard.model.FeatureFlag;
 import com.fluxguard.model.RateLimitDecision;
 import com.fluxguard.redis.LuaScriptExecutor;
 import com.fluxguard.util.ClockProvider;
@@ -17,6 +19,7 @@ import io.opentelemetry.context.Scope;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,8 +32,10 @@ import org.springframework.web.servlet.HandlerInterceptor;
  *
  * <p>Execution order for every inbound request:
  * <ol>
+ *   <li>If the global kill switch is active, allow immediately (no Redis call).</li>
  *   <li>Reject with 400 if {@code X-Client-ID} header is absent or blank.</li>
  *   <li>Skip limiting if no {@link LimitConfig} is registered for the exact path.</li>
+ *   <li>Apply feature-flag logic: live rollout, dark launch, or primary config.</li>
  *   <li>Execute the Lua rate-limit script via {@link LuaScriptExecutor},
  *       wrapped in a Resilience4j circuit breaker.</li>
  *   <li>On allow: set {@code X-RateLimit-Remaining} and continue.</li>
@@ -38,11 +43,8 @@ import org.springframework.web.servlet.HandlerInterceptor;
  *   <li>On Redis failure or circuit open: fail-open (allow + log WARN + counter).</li>
  * </ol>
  *
- * <p>Duration is recorded only when a real rate-limit decision was made (step 3).
- * The 400 path (step 1) and unknown-path pass-through (step 2) do not record duration.
- *
- * <p>This class calls Redis for rate-limiting decisions via {@link com.fluxguard.redis.LuaScriptExecutor}.
- * {@link com.fluxguard.config.ConfigService} also calls Redis for config CRUD — see ADR-004.
+ * <p>This is the <em>only</em> class in the application that calls Redis for
+ * rate-limiting decisions, per the architectural rule in CLAUDE.md.
  */
 @Component
 public class RateLimitFilter implements HandlerInterceptor {
@@ -82,12 +84,16 @@ public class RateLimitFilter implements HandlerInterceptor {
     /** Span attribute key for reset delay on a denied decision. */
     private static final String TAG_RATE_LIMIT_RESET_AFTER_MS = "rate_limit.reset_after_ms";
 
+    /** Client ID suffix appended to the shadow bucket key in dark-launch mode. */
+    private static final String DARK_LAUNCH_SUFFIX = ":dark";
+
     private static final int  STATUS_BAD_REQUEST       = 400;
     private static final int  STATUS_TOO_MANY_REQUESTS = 429;
     private static final long MILLIS_PER_SECOND        = 1000L;
 
     private final LuaScriptExecutor executor;
     private final ConfigService configService;
+    private final FeatureFlagService flagService;
     private final ClockProvider clock;
     private final CircuitBreaker circuitBreaker;
     private final PrometheusMetricsCollector metrics;
@@ -97,7 +103,8 @@ public class RateLimitFilter implements HandlerInterceptor {
      * Constructs the filter with all required collaborators.
      *
      * @param executor        executes Lua scripts against Redis
-     * @param configService   runtime config store; queried per request
+     * @param configService   dynamic per-endpoint rate-limit configuration
+     * @param flagService     per-endpoint feature flag store
      * @param clock           injectable clock; never call {@code System.currentTimeMillis()} directly
      * @param circuitBreaker  Resilience4j circuit breaker wrapping Redis calls
      * @param metrics         Micrometer metrics facade for all rate-limit signals
@@ -106,12 +113,14 @@ public class RateLimitFilter implements HandlerInterceptor {
     public RateLimitFilter(
             final LuaScriptExecutor executor,
             final ConfigService configService,
+            final FeatureFlagService flagService,
             final ClockProvider clock,
             final CircuitBreaker circuitBreaker,
             final PrometheusMetricsCollector metrics,
             final Tracer tracer) {
         this.executor = executor;
         this.configService = configService;
+        this.flagService = flagService;
         this.clock = clock;
         this.circuitBreaker = circuitBreaker;
         this.metrics = metrics;
@@ -143,14 +152,50 @@ public class RateLimitFilter implements HandlerInterceptor {
             return false;
         }
         final String path = request.getRequestURI();
-        final LimitConfig config = configService.getConfig(path).orElse(null);
-        if (config == null) {
+        final Optional<LimitConfig> configOpt = configService.getConfig(path);
+        if (configOpt.isEmpty()) {
             return true;
         }
-        return executeAndApply(path, clientId, config, response);
+        return applyWithFlag(path, clientId, configOpt.get(), response);
     }
 
     // ── private helpers ──────────────────────────────────────────────────────
+
+    private boolean applyWithFlag(
+            final String path,
+            final String clientId,
+            final LimitConfig primaryConfig,
+            final HttpServletResponse response) {
+        final Optional<FeatureFlag> flagOpt = flagService.getFlagForEndpoint(path);
+        if (flagOpt.isEmpty() || !flagOpt.get().enabled()) {
+            return executeAndApply(path, clientId, primaryConfig, response);
+        }
+        final FeatureFlag flag = flagOpt.get();
+        if (!flagService.isClientInRollout(flag, clientId)) {
+            return executeAndApply(path, clientId, primaryConfig, response);
+        }
+        if (flag.darkLaunch()) {
+            runDarkLaunchShadow(path, clientId, flag.overrideConfig());
+            return executeAndApply(path, clientId, primaryConfig, response);
+        }
+        return executeAndApply(path, clientId, flag.overrideConfig(), response);
+    }
+
+    private void runDarkLaunchShadow(
+            final String path,
+            final String clientId,
+            final LimitConfig overrideConfig) {
+        try {
+            final ClientIdentity shadowId =
+                ClientIdentity.of(clientId + DARK_LAUNCH_SUFFIX, path);
+            final RateLimitDecision shadowDecision = callExecutor(shadowId, overrideConfig);
+            if (!shadowDecision.allowed()) {
+                metrics.recordDarkLaunchWouldDeny(path);
+            }
+        } catch (RuntimeException ex) {
+            LOG.warn("Dark launch shadow failed for path={}: {}", path, ex.getMessage());
+        }
+    }
 
     private boolean executeAndApply(
             final String path,

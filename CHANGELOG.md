@@ -5,6 +5,26 @@
 
 ---
 
+## [2026-04-17] — Week 12 — Final polish: deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled
+
+- `scripts/deploy.sh` — complete rewrite: fluxguard ECR repo name, SHA + latest dual-tags, `:?` env guards for required vars (`ECR_REGISTRY`, `AWS_REGION`, `ECS_CLUSTER`, `ECS_SERVICE`), `aws ecs wait services-stable` for rollout verification, optional smoke test via `APP_URL/actuator/health`
+- `pom.xml` — added `micrometer-tracing-bridge-otel` (Spring Boot BOM-managed, no explicit version); bridges OTel context into Micrometer, populating `traceId`/`spanId` MDC keys for Logback
+- `logback-spring.xml` (new) — `traceId=%X{traceId} spanId=%X{spanId}` pattern in console appender; resolves the known issue of empty log MDC fields
+- `src/main/java/com/fluxguard/util/HashUtil.java` (new) — `rolloutBucket(endpoint, clientId)` → deterministic int [0,99] via `Math.abs(Objects.hash(endpoint, clientId)) % 100`
+- `src/main/java/com/fluxguard/model/FeatureFlag.java` (new) — record: `endpoint`, `enabled`, `darkLaunch`, `rolloutPercent`, `overrideConfig`
+- `src/main/java/com/fluxguard/config/FeatureFlagService.java` (new) — interface: `getFlagForEndpoint`, `isClientInRollout`, `getAllFlags`, `putFlag`, `removeFlag`
+- `src/main/java/com/fluxguard/config/RedisFeatureFlagService.java` (new) — Redis hash `fluxguard:flags`; flat JSON per endpoint; token-bucket + sliding-window deserialization; `@Bean` only (no `@Component`)
+- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` — wired `FeatureFlagService`; added `applyWithFlag()` (enabled + rollout check → live or dark-launch routing); `runDarkLaunchShadow()` (`:dark`-suffixed bucket, fail-open, records `rate.limit.dark_launch.would_deny`)
+- `src/main/java/com/fluxguard/metrics/PrometheusMetricsCollector.java` — added `METRIC_DARK_LAUNCH = "rate.limit.dark_launch.would_deny"` + `recordDarkLaunchWouldDeny(endpoint)` counter
+- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` — added `@Bean FeatureFlagService`
+- `src/test/java/com/fluxguard/filter/RateLimitFilterTracingTest.java` — added `stubFlagService()` returning `Optional.empty()`, updated filter constructor call
+- Corrected PROJECT_STATE: Week 11 (auth+audit) was never committed — reset to ⬜; Week 10 production code confirmed present
+- `mvn test` — BUILD SUCCESS, 127 unit tests, 0 failures
+
+## [NOT COMMITTED] — Week 11 — Admin auth (API-key header) + append-only audit log
+> **Note:** This entry was written in a prior session but the corresponding code was never committed to main. Deferred to next session.
+- Planned: `AdminAuthFilter`, `AuditService`, `RedisAuditService`, `ADR-006`
+
 ## [2026-04-16] — Week 7 — OTLP gRPC fix + log pattern correction
 - `application.yml` — added `protocol: grpc` under `otel.exporter.otlp`; OTel starter requires explicit protocol to use gRPC (port 4317) instead of defaulting to http/protobuf (port 4318)
 - `application.yml` — fixed log pattern MDC keys: `%X{traceId}` → `%X{trace_id}`, `%X{spanId}` → `%X{span_id}`; OTel uses snake_case MDC keys, not Micrometer-style camelCase

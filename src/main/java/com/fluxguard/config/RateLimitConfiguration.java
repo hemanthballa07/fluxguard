@@ -109,7 +109,24 @@ public class RateLimitConfiguration {
     }
 
     /**
-     * Provides the application tracer used for Week 7 decision and Redis script spans.
+     * Provides the {@link FeatureFlagService} backed by Redis.
+     *
+     * <p>This is the sole registration point for {@link RedisFeatureFlagService} —
+     * the implementation carries no {@code @Component} annotation (ADR-005).
+     *
+     * @param redis        Spring Data Redis string template
+     * @param objectMapper Jackson mapper auto-configured by Spring Boot
+     * @return the Redis-backed feature flag service
+     */
+    @Bean
+    public FeatureFlagService featureFlagService(
+            final StringRedisTemplate redis,
+            final ObjectMapper objectMapper) {
+        return new RedisFeatureFlagService(redis, objectMapper);
+    }
+
+    /**
+     * Provides the application tracer used for rate-limit decision and Redis script spans.
      *
      * @param openTelemetry auto-configured OpenTelemetry entrypoint from the starter
      * @return tracer scoped to the FluxGuard application

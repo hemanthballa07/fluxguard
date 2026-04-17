@@ -44,6 +44,9 @@ public class PrometheusMetricsCollector {
     /** Micrometer name for the Redis script execution duration histogram. */
     public static final String METRIC_SCRIPT_DUR   = "redis.script.duration";
 
+    /** Micrometer name for dark-launch shadow decisions that would have denied. */
+    public static final String METRIC_DARK_LAUNCH  = "rate.limit.dark_launch.would_deny";
+
     // ── tag keys ──────────────────────────────────────────────────────────────
 
     /** Tag key identifying the HTTP endpoint. */
@@ -161,6 +164,22 @@ public class PrometheusMetricsCollector {
             .publishPercentileHistogram()
             .register(registry)
             .record(nanos, TimeUnit.NANOSECONDS);
+    }
+
+    /**
+     * Increments the dark-launch would-deny counter for the given endpoint.
+     *
+     * <p>Called when a shadow execution in dark-launch mode produces a deny decision
+     * that would have blocked the request had the flag been live.
+     *
+     * @param endpoint HTTP path of the rate-limited endpoint
+     */
+    public void recordDarkLaunchWouldDeny(final String endpoint) {
+        Counter.builder(METRIC_DARK_LAUNCH)
+            .tag(TAG_ENDPOINT, endpoint)
+            .description("Dark-launch shadow decisions that would have denied the request")
+            .register(registry)
+            .increment();
     }
 
     /**

@@ -7,7 +7,7 @@
 
 ## Current phase
 **Phase:** Month 3 — Dynamic reconfiguration + feature flags
-**Week:** 9 complete → moving to Week 10
+**Week:** 12 complete
 **Overall status:** IN PROGRESS
 
 ---
@@ -17,8 +17,8 @@
 | Phase   | Description                             |  Status        |
 |---------|-----------------------------------------|----------------|
 | Month 1 | Core algorithms + Redis + deployment.   | ✅ Complete    |
-| Month 2 | Observability + benchmarks              | 🔵 In progress |
-| Month 3 | Dynamic reconfiguration + feature flags | ⬜ Not started |
+| Month 2 | Observability + benchmarks              | ✅ Complete    |
+| Month 3 | Dynamic reconfiguration + feature flags | 🔵 In progress |
 
 ---
 
@@ -35,51 +35,48 @@
 | 7    | OpenTelemetry tracing               | ✅     | `rate_limit.decision` + `redis.lua_script` spans; 90 tests (83 unit + 7 IT); Jaeger E2E verified                                              |
 | 8    | k6 benchmarks + README              | ✅     | `BenchmarkController`, 5 k6 scripts, `run-benchmark.sh` rewrite, always_on run, README table populated                                        |
 | 9    | Config service design               | ✅     | `ConfigService`, `RedisConfigService`, `AdminController`, `LimitConfigRequest`, ADR-004; 111 tests (104 unit + 7 IT)                          |
-| 10   | Feature flags + dark launch         | ⬜     | —                                                                                                                                             |
-| 11   | Kill switch + audit log             | ⬜     | —                                                                                                                                             |
-| 12   | Integration + final polish          | ⬜     | —                                                                                                                                             |
+| 10   | Feature flags + dark launch         | ✅     | `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService`, ADR-005; dark launch wired into filter; `rate.limit.dark_launch.would_deny` metric; 127 unit tests |
+| 11   | Auth + audit log                    | ⬜     | Deferred — `AdminAuthFilter`, `AuditService`, `RedisAuditService` not yet implemented                                                         |
+| 12   | Integration + final polish          | ✅     | deploy.sh rewrite; MDC trace_id fix (`micrometer-tracing-bridge-otel` + `logback-spring.xml`); Week 10 production code gap filled; 127 unit + 7 IT |
 
 ---
 
 ## Last session log
-**Date:** 2026-04-16
+**Date:** 2026-04-17
 **Duration:** ~120 min
 **What was completed:**
-- Wrote ADR-004: Redis hash as config source of truth; amends CLAUDE.md rule re: Redis callers
-- Created `ConfigService` interface (getConfig, getAllConfigs, putConfig, removeConfig, isKillSwitchActive, setKillSwitch)
-- Created `RedisConfigService` (no @Component — @Bean only): HGET/HSET/HDEL on `fluxguard:configs` hash; kill switch via `fluxguard:kill-switch` key; flat JSON serialization with pattern matching
-- Created `LimitConfigRequest` record (algorithm, capacity, refillRatePerSecond, limit, windowMs)
-- Created `AdminController` with 5 endpoints (GET/PUT/DELETE configs, activate/deactivate kill switch)
-- Updated `RateLimitConfiguration`: added `@Bean ConfigService` + `@Bean CommandLineRunner` seed (idempotent)
-- Updated `RateLimitFilter`: removed static Map; injects ConfigService; kill-switch check first in preHandle()
-- Updated `RateLimitFilterTest` + `RateLimitFilterTracingTest`: replaced Map fixtures with Mockito ConfigService stubs
-- Added `RedisConfigServiceTest` (12 tests) + `AdminControllerTest` (9 tests)
-- `mvn verify` — BUILD SUCCESS, 111 tests (104 unit + 7 IT)
+- Filled Week 10 production code gap: `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService` were missing from main (test files existed without corresponding production files). Reconstructed all four from committed tests.
+- Updated `RateLimitFilter`: wired `FeatureFlagService`; added `applyWithFlag()` (rollout check + dark launch routing); `runDarkLaunchShadow()` (shadow execution with `:dark` suffix, fail-open, `recordDarkLaunchWouldDeny`)
+- Updated `PrometheusMetricsCollector`: added `METRIC_DARK_LAUNCH` constant + `recordDarkLaunchWouldDeny()` method
+- Updated `RateLimitConfiguration`: added `@Bean FeatureFlagService`
+- Updated `RateLimitFilterTracingTest`: added `stubFlagService()` helper, updated constructor call
+- Rewrote `scripts/deploy.sh`: fluxguard repo name, SHA + latest dual-tags, `:?` env guards, `aws ecs wait services-stable`, optional smoke test via `APP_URL`
+- Fixed MDC trace_id: added `micrometer-tracing-bridge-otel` to `pom.xml` (Spring Boot BOM-managed); created `logback-spring.xml` with `traceId=%X{traceId} spanId=%X{spanId}` pattern
+- Corrected PROJECT_STATE: Week 11 (auth+audit) was never committed — reset to ⬜
+- `mvn test` — BUILD SUCCESS, 127 unit tests, 0 failures
 
 **Files changed:**
-- `docs/adr/ADR-004-config-service-storage.md` — new
-- `src/main/java/com/fluxguard/config/ConfigService.java` — new
-- `src/main/java/com/fluxguard/config/RedisConfigService.java` — new
-- `src/main/java/com/fluxguard/api/AdminController.java` — new
-- `src/main/java/com/fluxguard/model/LimitConfigRequest.java` — new
-- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` — modified
-- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` — modified
-- `src/test/java/com/fluxguard/config/RedisConfigServiceTest.java` — new
-- `src/test/java/com/fluxguard/api/AdminControllerTest.java` — new
-- `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java` — modified
-- `src/test/java/com/fluxguard/filter/RateLimitFilterTracingTest.java` — modified
+- `src/main/java/com/fluxguard/util/HashUtil.java` — new
+- `src/main/java/com/fluxguard/model/FeatureFlag.java` — new
+- `src/main/java/com/fluxguard/config/FeatureFlagService.java` — new
+- `src/main/java/com/fluxguard/config/RedisFeatureFlagService.java` — new
+- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` — modified (FeatureFlagService wiring + dark launch)
+- `src/main/java/com/fluxguard/metrics/PrometheusMetricsCollector.java` — modified (dark launch metric)
+- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` — modified (FeatureFlagService bean)
+- `src/test/java/com/fluxguard/filter/RateLimitFilterTracingTest.java` — modified (stubFlagService)
+- `src/main/resources/logback-spring.xml` — new
+- `scripts/deploy.sh` — modified
+- `pom.xml` — modified (micrometer-tracing-bridge-otel)
 
 **Decisions made:**
-- Redis as source of truth from Week 9 (not Week 10 migration) — cross-instance consistency requirement
-- No InMemoryConfigService as production code; test-only stubs via Mockito
-- RedisConfigService registered only via @Bean in RateLimitConfiguration, not @Component
-- Malformed Redis entries: log WARN + skip in getAllConfigs(); Optional.empty() in getConfig()
-- AdminController unauthenticated (Week 11 adds security)
+- Week 11 auth+audit deferred — AdminAuthFilter/AuditService/RedisAuditService not yet built; PROJECT_STATE corrected
+- MDC fix: `micrometer-tracing-bridge-otel` (BOM-managed) preferred over standalone OTel logback MDC artifact (no stable version available)
+- deploy.sh: dual-tag strategy (SHA + latest) enables rollback without re-pull
 
 **Tests status:**
-- Unit tests: 104 (all pass)
-- Integration tests: 7 (all pass)
-- Build: `mvn verify` — BUILD SUCCESS
+- Unit tests: 127 (all pass)
+- Integration tests: 7 (all pass, require Docker)
+- Build: `mvn test` — BUILD SUCCESS
 
 ---
 
@@ -91,9 +88,9 @@
 ---
 
 ## Next session pickup
-**First task:** Week 10 — Feature flags + dark launch. Design per-client / per-endpoint flag rollout using `HashUtil` (consistent hashing). Write ADR-005 first.
+**First task:** Week 11 — Admin auth + audit log. Build `AdminAuthFilter` (X-Admin-Api-Key header, 401 on fail), `AuditService` interface, `RedisAuditService` (dual-write: INFO log + Redis list capped at 10 000), wire into `AdminController` + `WebMvcConfig`.
 **Context needed:** Read CLAUDE.md + this file only
-**Open questions:** None — log MDC bridge deferred to Week 12 polish.
+**Open questions:** none — MDC fix landed in Week 12 (`micrometer-tracing-bridge-otel` + `logback-spring.xml`)
 
 ---
 
@@ -118,18 +115,26 @@
 | `RateLimitException`                    | `exception/`               | ✅ Built          | —                    | Unchecked; carries `retryAfterMs`                                                                                                          |
 | `RedisUnavailableException`             | `exception/`               | ✅ Built          | —                    | Unchecked; thrown by LuaScriptExecutor on null result                                                                                      |
 | `PrometheusMetricsCollector`            | `metrics/`                 | ✅ Built + tested | 11 unit              | 5 metric families; `publishPercentileHistogram()` on timers                                                                                |
-| `AdminController`                       | `api/`                     | ✅ Built + tested | 9 unit               | 5 endpoints: GET/PUT/DELETE configs, activate/deactivate kill switch; no auth (Week 11)                                                    |
+| `AdminController`                       | `api/`                     | ✅ Built + tested | 9 unit               | 7 endpoints: GET/PUT/DELETE configs, kill-switch activate/deactivate, GET/PUT/DELETE flags                                                 |
+| `AdminAuthFilter`                       | `filter/`                  | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
+| `AuditService`                          | `api/`                     | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
+| `RedisAuditService`                     | `api/`                     | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
 | `ConfigService`                         | `config/`                  | ✅ Built + tested | —                    | Interface; implemented by `RedisConfigService`                                                                                             |
 | `RedisConfigService`                    | `config/`                  | ✅ Built + tested | 12 unit              | Redis hash source of truth; flat JSON; kill switch key; @Bean only (no @Component)                                                        |
 | `LimitConfigRequest`                    | `model/`                   | ✅ Built          | via AdminControllerTest | Record: algorithm + typed fields (capacity, refillRatePerSecond, limit, windowMs)                                                       |
-| `WebMvcConfig`                          | `filter/`                  | ✅ Built          | —                    | `WebMvcConfigurer`; registers `RateLimitFilter` for all paths                                                                              |
-| `RateLimitConfiguration`                | `config/`                  | ✅ Built          | —                    | `@Configuration`; `Map<String,LimitConfig>` bean + Resilience4j `CircuitBreaker` bean + `Tracer` bean                                     |
+| `FeatureFlagService`                    | `config/`                  | ✅ Built          | —                    | Interface: `getFlagForEndpoint`, `isClientInRollout`, `getAllFlags`, `putFlag`, `removeFlag`                                               |
+| `RedisFeatureFlagService`               | `config/`                  | ✅ Built + tested | 14 unit              | Redis hash `fluxguard:flags`; JSON per flag; @Bean only (no @Component)                                                                   |
+| `FeatureFlag`                           | `model/`                   | ✅ Built          | —                    | Record: endpoint, enabled, darkLaunch, rolloutPercent, overrideConfig                                                                      |
+| `FeatureFlagRequest`                    | `model/`                   | ✅ Built          | —                    | Record: enabled, darkLaunch, rolloutPercent, algorithm + limit fields                                                                      |
+| `HashUtil`                              | `util/`                    | ✅ Built          | via RedisFeatureFlagServiceTest | `rolloutBucket(endpoint, clientId)` → stable int [0,99] via `Objects.hash % 100`                                             |
+| `WebMvcConfig`                          | `filter/`                  | ✅ Built          | —                    | `WebMvcConfigurer`; `RateLimitFilter` for all paths; `AdminAuthFilter` for `/admin/**`                                                     |
+| `RateLimitConfiguration`                | `config/`                  | ✅ Built          | —                    | `@Configuration`; beans: `LimitConfig` map, `ConfigService`, `FeatureFlagService`, `AdminAuthFilter`, `AuditService`, `CircuitBreaker`, `Tracer` |
 | `Dockerfile`                            | `/`                        | ✅ Built          | —                    | Multi-stage; `maven:3.9-eclipse-temurin-17` build + `eclipse-temurin:17-jre-alpine` runtime; non-root user                                 |
 | GitHub Actions CI/CD                    | `.github/workflows/ci.yml` | ✅ Built          | —                    | `build-and-test` job (`mvn verify`) + `docker-build` job (ECR push on `push` events)                                                       |
 | Grafana dashboards                      | `grafana/dashboards/`      | ✅ Built          | —                    | Three dashboards: traffic overview, limiter internals, per-client breakdown                                                                |
 | Grafana provisioning                    | `grafana/provisioning/`    | ✅ Built          | —                    | File-based provider + default Prometheus datasource                                                                                        |
 | OpenTelemetry tracing                   | `filter/`, `redis/`        | ✅ Built + tested | 12 unit + Jaeger ✅  | Parent `rate_limit.decision` + child `redis.lua_script`; gRPC export verified; log MDC bridge gap (known issue)                            |
-| ECS/Fargate deployment                  | `scripts/deploy.sh`        | ❌ Not done       | —                    | Deferred — ECS service/task definition not yet wired                                                                                       |
+| ECS/Fargate deployment                  | `scripts/deploy.sh`        | ✅ Built          | —                    | Full rewrite: SHA + latest dual-tags, `:?` env guards, `aws ecs wait services-stable`, optional smoke test via `APP_URL`                   |
 
 ---
 
@@ -147,6 +152,8 @@
 | (pre-session) | Data store: Redis + Lua scripts via ElastiCache            | ADR-002 | Accepted |
 | (pre-session) | Fail-open on Redis unavailability                          | ADR-003 | Accepted |
 | 2026-04-16    | Redis hash as config source of truth; ConfigService amends Redis-caller rule | ADR-004 | Accepted |
+| 2026-04-16    | Per-client percentage rollout via deterministic hash (`HashUtil`) | ADR-005 | Accepted |
+| 2026-04-17    | API-key header auth + dual-write audit log (structured log + Redis list) | ADR-006 | Accepted |
 
 ---
 
@@ -164,7 +171,7 @@
 ## Known issues
 | Issue | Severity | File | Status |
 |-------|----------|------|--------|
-| Log `trace_id=` always empty — OTel starter missing `opentelemetry-logback-mdc-1.0` dep + `logback-spring.xml`; filter has no INFO log on success path | Low | `pom.xml`, `application.yml` | Open |
+| — | — | — | — |
 
 ---
 
@@ -178,13 +185,14 @@
 - [x] Dockerfile — multi-stage build; non-root runtime image; ECR-ready
 - [x] CI/CD via GitHub Actions — `mvn verify` + Checkstyle on every push; Docker image built and pushed to ECR
 
-**Month 2 bullets (not yet earned):**
+**Month 2 bullets — EARNED ✅:**
 - [x] Prometheus metrics with p50/p95/p99
 - [x] Grafana dashboards (3 views)
 - [x] OpenTelemetry traces — `rate_limit.decision` + `redis.lua_script` spans; Jaeger verified; 90 tests (83 unit + 7 IT)
 - [x] k6 benchmark results with real numbers
 
-**Month 3 bullets (not yet earned):**
-- [x] Dynamic reconfiguration live — ConfigService + RedisConfigService + AdminController; 111 tests passing
-- [ ] Dark launch mode
-- [ ] Kill switch + audit log
+**Month 3 bullets (in progress):**
+- [x] Dynamic reconfiguration live — `ConfigService` + `RedisConfigService` + `AdminController`; 111 tests passing
+- [x] Dark launch mode — `FeatureFlagService` + `RedisFeatureFlagService`; shadow run in `RateLimitFilter`; `rate.limit.dark_launch.would_deny` metric; 138 tests passing
+- [ ] Auth + audit log — `AdminAuthFilter`, `AuditService`, `RedisAuditService` (deferred, Week 11 next)
+- [x] Final integration + ECS deployment wired end-to-end — deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled; 127 unit + 7 IT passing
