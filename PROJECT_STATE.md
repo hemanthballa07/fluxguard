@@ -6,8 +6,8 @@
 ---
 
 ## Current phase
-**Phase:** Month 2 — Observability + benchmarks
-**Week:** 7 complete → moving to Week 8
+**Phase:** Month 3 — Dynamic reconfiguration + feature flags
+**Week:** 9 complete → moving to Week 10
 **Overall status:** IN PROGRESS
 
 ---
@@ -34,7 +34,7 @@
 | 6    | Grafana dashboards                  | ✅     | 3 dashboards (traffic, internals, per-client), provisioning, datasource                                                                       |
 | 7    | OpenTelemetry tracing               | ✅     | `rate_limit.decision` + `redis.lua_script` spans; 90 tests (83 unit + 7 IT); Jaeger E2E verified                                              |
 | 8    | k6 benchmarks + README              | ✅     | `BenchmarkController`, 5 k6 scripts, `run-benchmark.sh` rewrite, always_on run, README table populated                                        |
-| 9    | Config service design               | ⬜     | —                                                                                                                                             |
+| 9    | Config service design               | ✅     | `ConfigService`, `RedisConfigService`, `AdminController`, `LimitConfigRequest`, ADR-004; 111 tests (104 unit + 7 IT)                          |
 | 10   | Feature flags + dark launch         | ⬜     | —                                                                                                                                             |
 | 11   | Kill switch + audit log             | ⬜     | —                                                                                                                                             |
 | 12   | Integration + final polish          | ⬜     | —                                                                                                                                             |
@@ -43,35 +43,41 @@
 
 ## Last session log
 **Date:** 2026-04-16
-**Duration:** ~90 min
+**Duration:** ~120 min
 **What was completed:**
-- Added `BenchmarkController` under `@Profile("benchmark")` — stub GET /api/search + POST /api/ingest so RateLimitFilter is exercised by k6
-- Wrote 5 k6 scripts: `steady-search`, `steady-ingest`, `burst-ingest`, `threshold-search`, `sustained-mixed`
-- Deleted old `steady-load.js` + `burst-load.js` (hit `/api/v1/health`, never rate-limited)
-- Rewrote `run-benchmark.sh` with timestamped `<ts>-<sampler>/` output dirs + k6 install check
-- Added `k6/results/README.md` with reproduction instructions
-- Ran always_on benchmark suite — all 5 scenarios passed all thresholds
-- Updated README benchmark table with real p50/p95/p99 numbers
-- `mvn verify` — BUILD SUCCESS, 90 tests (83 unit + 7 IT)
+- Wrote ADR-004: Redis hash as config source of truth; amends CLAUDE.md rule re: Redis callers
+- Created `ConfigService` interface (getConfig, getAllConfigs, putConfig, removeConfig, isKillSwitchActive, setKillSwitch)
+- Created `RedisConfigService` (no @Component — @Bean only): HGET/HSET/HDEL on `fluxguard:configs` hash; kill switch via `fluxguard:kill-switch` key; flat JSON serialization with pattern matching
+- Created `LimitConfigRequest` record (algorithm, capacity, refillRatePerSecond, limit, windowMs)
+- Created `AdminController` with 5 endpoints (GET/PUT/DELETE configs, activate/deactivate kill switch)
+- Updated `RateLimitConfiguration`: added `@Bean ConfigService` + `@Bean CommandLineRunner` seed (idempotent)
+- Updated `RateLimitFilter`: removed static Map; injects ConfigService; kill-switch check first in preHandle()
+- Updated `RateLimitFilterTest` + `RateLimitFilterTracingTest`: replaced Map fixtures with Mockito ConfigService stubs
+- Added `RedisConfigServiceTest` (12 tests) + `AdminControllerTest` (9 tests)
+- `mvn verify` — BUILD SUCCESS, 111 tests (104 unit + 7 IT)
 
 **Files changed:**
-- `src/main/java/com/fluxguard/api/BenchmarkController.java` — new
-- `k6/scripts/steady-search.js` — new
-- `k6/scripts/steady-ingest.js` — new
-- `k6/scripts/burst-ingest.js` — new
-- `k6/scripts/threshold-search.js` — new
-- `k6/scripts/sustained-mixed.js` — new
-- `k6/scripts/run-benchmark.sh` — rewritten
-- `k6/results/README.md` — new
-- `README.md` — benchmark table populated
+- `docs/adr/ADR-004-config-service-storage.md` — new
+- `src/main/java/com/fluxguard/config/ConfigService.java` — new
+- `src/main/java/com/fluxguard/config/RedisConfigService.java` — new
+- `src/main/java/com/fluxguard/api/AdminController.java` — new
+- `src/main/java/com/fluxguard/model/LimitConfigRequest.java` — new
+- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` — modified
+- `src/main/java/com/fluxguard/filter/RateLimitFilter.java` — modified
+- `src/test/java/com/fluxguard/config/RedisConfigServiceTest.java` — new
+- `src/test/java/com/fluxguard/api/AdminControllerTest.java` — new
+- `src/test/java/com/fluxguard/filter/RateLimitFilterTest.java` — modified
+- `src/test/java/com/fluxguard/filter/RateLimitFilterTracingTest.java` — modified
 
 **Decisions made:**
-- `BenchmarkController` profile-gated (`@Profile("benchmark")`) — stubs never ship to prod
-- Kept production rate limits honest; 429 ratio reported as first-class column
-- Log MDC bridge deferred to end of Month 2 (known issue remains open)
+- Redis as source of truth from Week 9 (not Week 10 migration) — cross-instance consistency requirement
+- No InMemoryConfigService as production code; test-only stubs via Mockito
+- RedisConfigService registered only via @Bean in RateLimitConfiguration, not @Component
+- Malformed Redis entries: log WARN + skip in getAllConfigs(); Optional.empty() in getConfig()
+- AdminController unauthenticated (Week 11 adds security)
 
 **Tests status:**
-- Unit tests: 83 (all pass)
+- Unit tests: 104 (all pass)
 - Integration tests: 7 (all pass)
 - Build: `mvn verify` — BUILD SUCCESS
 
@@ -85,7 +91,7 @@
 ---
 
 ## Next session pickup
-**First task:** Week 9 — Config service design. Design `ConfigService` + `AdminController` for dynamic reconfiguration (no redeployment). Write ADR-004 before touching code.
+**First task:** Week 10 — Feature flags + dark launch. Design per-client / per-endpoint flag rollout using `HashUtil` (consistent hashing). Write ADR-005 first.
 **Context needed:** Read CLAUDE.md + this file only
 **Open questions:** None — log MDC bridge deferred to Week 12 polish.
 
@@ -112,8 +118,10 @@
 | `RateLimitException`                    | `exception/`               | ✅ Built          | —                    | Unchecked; carries `retryAfterMs`                                                                                                          |
 | `RedisUnavailableException`             | `exception/`               | ✅ Built          | —                    | Unchecked; thrown by LuaScriptExecutor on null result                                                                                      |
 | `PrometheusMetricsCollector`            | `metrics/`                 | ✅ Built + tested | 11 unit              | 5 metric families; `publishPercentileHistogram()` on timers                                                                                |
-| `AdminController`                       | `api/`                     | ❌ Not built      | —                    | Month 3                                                                                                                                    |
-| `ConfigService`                         | `config/`                  | ❌ Not built      | —                    | Month 3 — dynamic reconfiguration                                                                                                          |
+| `AdminController`                       | `api/`                     | ✅ Built + tested | 9 unit               | 5 endpoints: GET/PUT/DELETE configs, activate/deactivate kill switch; no auth (Week 11)                                                    |
+| `ConfigService`                         | `config/`                  | ✅ Built + tested | —                    | Interface; implemented by `RedisConfigService`                                                                                             |
+| `RedisConfigService`                    | `config/`                  | ✅ Built + tested | 12 unit              | Redis hash source of truth; flat JSON; kill switch key; @Bean only (no @Component)                                                        |
+| `LimitConfigRequest`                    | `model/`                   | ✅ Built          | via AdminControllerTest | Record: algorithm + typed fields (capacity, refillRatePerSecond, limit, windowMs)                                                       |
 | `WebMvcConfig`                          | `filter/`                  | ✅ Built          | —                    | `WebMvcConfigurer`; registers `RateLimitFilter` for all paths                                                                              |
 | `RateLimitConfiguration`                | `config/`                  | ✅ Built          | —                    | `@Configuration`; `Map<String,LimitConfig>` bean + Resilience4j `CircuitBreaker` bean + `Tracer` bean                                     |
 | `Dockerfile`                            | `/`                        | ✅ Built          | —                    | Multi-stage; `maven:3.9-eclipse-temurin-17` build + `eclipse-temurin:17-jre-alpine` runtime; non-root user                                 |
@@ -138,6 +146,7 @@
 | (pre-session) | Algorithm selection: token bucket + sliding window counter | ADR-001 | Accepted |
 | (pre-session) | Data store: Redis + Lua scripts via ElastiCache            | ADR-002 | Accepted |
 | (pre-session) | Fail-open on Redis unavailability                          | ADR-003 | Accepted |
+| 2026-04-16    | Redis hash as config source of truth; ConfigService amends Redis-caller rule | ADR-004 | Accepted |
 
 ---
 
@@ -176,6 +185,6 @@
 - [x] k6 benchmark results with real numbers
 
 **Month 3 bullets (not yet earned):**
-- [ ] Dynamic reconfiguration live
+- [x] Dynamic reconfiguration live — ConfigService + RedisConfigService + AdminController; 111 tests passing
 - [ ] Dark launch mode
 - [ ] Kill switch + audit log

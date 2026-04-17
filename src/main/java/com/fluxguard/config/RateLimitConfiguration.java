@@ -1,12 +1,15 @@
 package com.fluxguard.config;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import java.util.Map;
+import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 /**
  * Spring configuration for rate-limiting infrastructure beans.
@@ -50,6 +53,44 @@ public class RateLimitConfiguration {
             "/api/search", LimitConfig.slidingWindow("/api/search", SEARCH_LIMIT, SEARCH_WINDOW_MS),
             "/api/ingest", LimitConfig.tokenBucket("/api/ingest", INGEST_CAPACITY, INGEST_REFILL_RATE)
         );
+    }
+
+    /**
+     * Provides the {@link ConfigService} backed by Redis.
+     *
+     * <p>This is the sole registration point for {@link RedisConfigService} —
+     * the implementation carries no {@code @Component} annotation (ADR-004).
+     *
+     * @param redis        Spring Data Redis string template
+     * @param objectMapper Jackson mapper auto-configured by Spring Boot
+     * @return the Redis-backed config service
+     */
+    @Bean
+    public ConfigService configService(
+            final StringRedisTemplate redis,
+            final ObjectMapper objectMapper) {
+        return new RedisConfigService(redis, objectMapper);
+    }
+
+    /**
+     * Seeds Redis with the static config map on startup, skipping keys already present.
+     *
+     * <p>Idempotent across restarts. Allows operators to override limits at runtime
+     * without having them reset on redeploy.
+     *
+     * @param configService      the Redis-backed config service
+     * @param rateLimitConfigByPath static endpoint-to-algorithm bindings
+     * @return a runner that seeds missing keys
+     */
+    @Bean
+    public CommandLineRunner seedRedisConfigs(
+            final ConfigService configService,
+            final Map<String, LimitConfig> rateLimitConfigByPath) {
+        return args -> rateLimitConfigByPath.forEach((path, cfg) -> {
+            if (configService.getConfig(path).isEmpty()) {
+                configService.putConfig(path, cfg);
+            }
+        });
     }
 
     /**

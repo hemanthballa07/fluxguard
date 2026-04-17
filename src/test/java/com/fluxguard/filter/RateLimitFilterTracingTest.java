@@ -1,5 +1,6 @@
 package com.fluxguard.filter;
 
+import com.fluxguard.config.ConfigService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
@@ -19,7 +20,7 @@ import io.opentelemetry.sdk.trace.data.SpanData;
 import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
-import java.util.Map;
+import java.util.Optional;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -89,7 +90,7 @@ class RateLimitFilterTracingTest {
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
         circuitBreaker = CircuitBreaker.of("test-cb", circuitBreakerConfig());
         filter = new RateLimitFilter(
-            mockExecutor, configByPath(), mockClock, circuitBreaker, collector(), tracer);
+            mockExecutor, stubConfigService(), mockClock, circuitBreaker, collector(), tracer);
     }
 
     @AfterEach
@@ -220,10 +221,13 @@ class RateLimitFilterTracingTest {
         return req;
     }
 
-    private Map<String, LimitConfig> configByPath() {
-        return Map.of(
-            KNOWN_PATH, LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)
-        );
+    private ConfigService stubConfigService() {
+        final ConfigService stub = org.mockito.Mockito.mock(ConfigService.class);
+        org.mockito.Mockito.when(stub.isKillSwitchActive()).thenReturn(false);
+        org.mockito.Mockito.when(stub.getConfig(KNOWN_PATH))
+            .thenReturn(Optional.of(LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)));
+        org.mockito.Mockito.when(stub.getConfig(UNKNOWN_PATH)).thenReturn(Optional.empty());
+        return stub;
     }
 
     private PrometheusMetricsCollector collector() {
