@@ -5,6 +5,20 @@
 
 ---
 
+## [2026-04-17] — Week 11 (continued) — /admin/flags CRUD, AdminAuthFilterIT, Jackson serialization fix
+
+- `FeatureFlagRequest.java` (new) — request record for `PUT /admin/flags`: `enabled`, `darkLaunch`, `rolloutPercent`, optional `algorithm` + `capacity`/`refillRatePerSecond`/`limit`/`windowMs` fields
+- `AdminController.java` — added `GET/PUT/DELETE /admin/flags`; `rolloutPercent` validated 0–100 in controller; optional `overrideConfig` built with same field validation as `/admin/configs`; all mutations audited; constructor now takes `FeatureFlagService`; `HttpServletRequest` moved to method-level parameter injection (fixes `SlidingWindowIT` which uses `web-application-type=none`)
+- `AdminControllerTest.java` — 26 unit tests (was 17); 8 new: `getAllFlags`, `putFlag` no-override, `putFlag` token-bucket override, `putFlag` invalid algo → 400, `putFlag` token-bucket missing capacity → 400, `putFlag` rollout > 100 → 400, `removeFlag` delegates, audit on put + remove
+- `AdminAuthFilterIT.java` (new) — 5 integration tests against real Spring + Testcontainers Redis: missing key → 401 on `/admin/configs`, wrong key → 401 on `/admin/configs`, correct key → 200 `/admin/configs` (response body verified: contains `endpointPattern` and `type` discriminator), missing key → 401 on `/admin/flags`, correct key → 200 `/admin/flags`
+- `RateLimitFilter.java` — path/config lookup now runs **before** `X-Client-ID` check; paths with no registered config (all `/admin/**`) pass through without 400 regardless of client-ID header presence
+- `RateLimitAlgorithm.java` — `@JsonTypeInfo(Id.NAME, property="type")` + `@JsonSubTypes` for `TokenBucketAlgorithm`/`SlidingWindowAlgorithm`; fixes latent HTTP 500 on `GET /admin/configs`
+- `TokenBucketAlgorithm.java` — `@JsonProperty` on `capacity()` and `refillRatePerSecond()`
+- `SlidingWindowAlgorithm.java` — `@JsonProperty` on `limit()` and `windowMs()`
+- `pom.xml` — pinned `opentelemetry-instrumentation-api-incubator` to `2.25.0-alpha` in `dependencyManagement` (fixes conflict introduced by `micrometer-tracing-bridge-otel:1.4.x` pulling `2.9.0-alpha`)
+- `mvn test`: BUILD SUCCESS, 154 unit tests, 0 failures
+- `mvn verify`: BUILD SUCCESS, 154 unit + 16 IT tests, 0 failures
+
 ## [2026-04-17] — Week 11 — Admin auth (API-key header) + append-only audit log
 
 - `AdminAuthFilter.java` (new) — `HandlerInterceptor` for `/admin/**`; validates `X-Admin-Api-Key` header; 401 on miss or mismatch; sets `X-Admin-Actor = "admin"` on success; key injected via constructor (no `@Value` on class — testable without Spring)

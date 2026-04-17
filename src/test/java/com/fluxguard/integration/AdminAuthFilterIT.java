@@ -16,6 +16,8 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Integration tests for {@link com.fluxguard.filter.AdminAuthFilter}.
@@ -97,6 +99,29 @@ class AdminAuthFilterIT {
         final ResponseEntity<String> resp = restTemplate.exchange(
             "/admin/configs", HttpMethod.GET, withKey(API_KEY), String.class);
         assertEquals(HttpStatus.OK, resp.getStatusCode());
+    }
+
+    /**
+     * Verifies the {@code GET /admin/configs} response body contains the expected JSON
+     * shape: each entry must have an {@code endpointPattern} string and an {@code algorithm}
+     * object with a {@code type} discriminator field (e.g. {@code "sliding_window"} or
+     * {@code "token_bucket"}).
+     *
+     * <p>Example: {@code {"/api/search":{"endpointPattern":"/api/search",
+     * "algorithm":{"type":"sliding_window","limit":100,"windowMs":60000}}}}
+     */
+    @Test
+    void correctKeyGetConfigsResponseBodyContainsAlgorithmShape() {
+        final ResponseEntity<String> resp = restTemplate.exchange(
+            "/admin/configs", HttpMethod.GET, withKey(API_KEY), String.class);
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        final String body = resp.getBody();
+        assertNotNull(body, "Response body must not be null");
+        assertTrue(body.contains("\"endpointPattern\""),
+            "Response must contain endpointPattern field");
+        assertTrue(body.contains("\"type\""),
+            "Response must contain algorithm type discriminator");
     }
 
     /**

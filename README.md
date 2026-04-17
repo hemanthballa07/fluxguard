@@ -62,6 +62,43 @@ docker-compose -f docker/docker-compose.yml up -d
 mvn spring-boot:run
 ```
 
+## Admin API
+
+All `/admin/**` endpoints require the `X-Admin-Api-Key` header (set via `ADMIN_API_KEY` env var;
+default `changeme-replace-in-prod`).
+
+```bash
+# 401 — missing key
+curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/admin/configs
+# → 401
+
+# 200 — list all rate-limit configs
+curl -s -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8080/admin/configs
+# → {"/api/search":{"endpointPattern":"/api/search","algorithm":{"type":"sliding_window","limit":100,"windowMs":60000}}, ...}
+
+# PUT a feature flag with a live-rollout token-bucket override for 50% of clients
+curl -s -X POST \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"enabled":true,"darkLaunch":false,"rolloutPercent":50,"algorithm":"token_bucket","capacity":20,"refillRatePerSecond":5}' \
+  "http://localhost:8080/admin/flags?endpoint=/api/search"
+# → 200
+
+# GET all feature flags
+curl -s -H "X-Admin-Api-Key: $ADMIN_API_KEY" http://localhost:8080/admin/flags
+# → {"/api/search":{"endpoint":"/api/search","enabled":true,"darkLaunch":false,"rolloutPercent":50, ...}}
+
+# DELETE a feature flag
+curl -s -X DELETE \
+  -H "X-Admin-Api-Key: $ADMIN_API_KEY" \
+  "http://localhost:8080/admin/flags?endpoint=/api/search"
+# → 204
+
+# GET audit log (last 10 entries)
+curl -s -H "X-Admin-Api-Key: $ADMIN_API_KEY" "http://localhost:8080/admin/audit?limit=10"
+# → ["{\"action\":\"PUT_FLAG\",\"target\":\"/api/search\",...}", ...]
+```
+
 ## Running tests
 
 ```bash
