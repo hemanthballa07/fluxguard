@@ -7,8 +7,8 @@
 
 ## Current phase
 **Phase:** Month 3 — Dynamic reconfiguration + feature flags
-**Week:** 11 complete
-**Overall status:** IN PROGRESS
+**Week:** All weeks complete
+**Overall status:** ✅ COMPLETE — release-ready, 197 tests passing
 
 ---
 
@@ -18,7 +18,7 @@
 |---------|-----------------------------------------|----------------|
 | Month 1 | Core algorithms + Redis + deployment.   | ✅ Complete    |
 | Month 2 | Observability + benchmarks              | ✅ Complete    |
-| Month 3 | Dynamic reconfiguration + feature flags | 🔵 In progress |
+| Month 3 | Dynamic reconfiguration + feature flags | ✅ Complete    |
 
 ---
 
@@ -38,6 +38,7 @@
 | 10   | Feature flags + dark launch         | ✅     | `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService`, ADR-005; dark launch wired into filter; `rate.limit.dark_launch.would_deny` metric; 127 unit tests |
 | 11   | Auth + audit log                    | ✅     | `AdminAuthFilter` (`X-Admin-Api-Key` header, 401 on fail, sets `X-Admin-Actor`), `AuditService`, `RedisAuditService` (dual-write log+Redis), `GET /admin/audit`; `/admin/flags` CRUD; ADR-006; 154 unit tests |
 | 12   | Integration + final polish          | ✅     | deploy.sh rewrite; MDC trace_id fix (`micrometer-tracing-bridge-otel` + `logback-spring.xml`); Week 10 production code gap filled; 127 unit + 7 IT |
+| H    | Hardening + bugfix                  | ✅     | Failure-path, boundary, CRUD round-trip tests; null overrideConfig NPE fix; `deserialize` missing-algo fix; 197 total (175 unit + 22 IT), 0 failures |
 
 ---
 
@@ -112,17 +113,20 @@
 
 ---
 
-## Current session (in progress)
-**Started:** —
-**Working on:** —
-**Blockers:** none
+## Last hardening session
+**Date:** 2026-04-17
+**What was completed:**
+- Production-hardening test pass: +23 tests across 5 test classes
+- Bugfix: `RedisFeatureFlagService.serialize()` NPE on null overrideConfig
+- Bugfix: `RedisFeatureFlagService.deserialize()` returned `Optional.empty()` for flags without algorithm override (invisible after store)
+- `mvn verify` — BUILD SUCCESS, 175 unit + 22 IT = 197 total, 0 failures
 
 ---
 
 ## Next session pickup
-**First task:** Project complete — 154 unit + 17 IT passing, all resume bullets earned, CHANGELOG and README current.
-**Context needed:** Read CLAUDE.md + this file only
-**Open questions:** none
+**First task:** Project is complete. No next session.
+**Context needed:** N/A
+**Open questions:** None
 
 ---
 
@@ -141,21 +145,21 @@
 | `ClockProvider` / `SystemClockProvider` | `util/`                    | ✅ Built          | —                    | Testable clock abstraction; `@Component`                                                                                                   |
 | `RateLimitDecision`                     | `model/`                   | ✅ Built          | via algorithm tests  | Record; `allow(remaining)` + `deny(resetAfterMs)`                                                                                          |
 | `ClientIdentity`                        | `model/`                   | ✅ Built          | —                    | Record; `of(clientId, endpoint)` → `rl:{id}:{path}`                                                                                        |
-| `RateLimitFilter`                       | `filter/`                  | ✅ Built + tested | 21 unit + 4 IT       | `HandlerInterceptor`; fail-open on Redis error + circuit open; 429 + Retry-After; metrics; `rate_limit.decision` parent span               |
+| `RateLimitFilter`                       | `filter/`                  | ✅ Built + tested | 34 unit + 4 IT       | `HandlerInterceptor`; fail-open on Redis error + circuit open; 429 + Retry-After; metrics; `rate_limit.decision` parent span               |
 | `RateLimitFilterTracingTest`            | `filter/`                  | ✅ Built + tested | 7 unit (tracing)     | allow/deny/redis-error/circuit-open/no-span; `OpenTelemetry.noop()` in unit tests                                                         |
 | `LuaScriptExecutorTracingTest`          | `redis/`                   | ✅ Built + tested | 5 unit (tracing)     | attributes, null-result error, parent-child linkage                                                                                        |
 | `RateLimitException`                    | `exception/`               | ✅ Built          | —                    | Unchecked; carries `retryAfterMs`                                                                                                          |
 | `RedisUnavailableException`             | `exception/`               | ✅ Built          | —                    | Unchecked; thrown by LuaScriptExecutor on null result                                                                                      |
 | `PrometheusMetricsCollector`            | `metrics/`                 | ✅ Built + tested | 11 unit              | 5 metric families; `publishPercentileHistogram()` on timers                                                                                |
-| `AdminController`                       | `api/`                     | ✅ Built + tested | 26 unit              | 9 endpoints: GET/PUT/DELETE configs, GET/PUT/DELETE flags, kill-switch activate/deactivate, GET /admin/audit; audit on all mutations |
+| `AdminController`                       | `api/`                     | ✅ Built + tested | 39 unit              | 9 endpoints: GET/PUT/DELETE configs, GET/PUT/DELETE flags, kill-switch activate/deactivate, GET /admin/audit; audit on all mutations |
 | `AdminAuthFilter`                       | `filter/`                  | ✅ Built + tested | 4 unit               | `X-Admin-Api-Key` header check; 401 on miss/mismatch; sets `X-Admin-Actor` attr; `/admin/**` only             |
 | `AuditService`                          | `api/`                     | ✅ Built          | —                    | Interface: `record(action, target, details, actor)` + `getRecent(count)`                                       |
-| `RedisAuditService`                     | `api/`                     | ✅ Built + tested | 6 unit               | Dual-write: INFO log (`audit.admin`, always) + `RPUSH fluxguard:audit-log` capped 10 000 (fail-open)          |
+| `RedisAuditService`                     | `api/`                     | ✅ Built + tested | 8 unit               | Dual-write: INFO log (`audit.admin`, always) + `RPUSH fluxguard:audit-log` capped 10 000 (fail-open)          |
 | `ConfigService`                         | `config/`                  | ✅ Built + tested | —                    | Interface; implemented by `RedisConfigService`                                                                                             |
 | `RedisConfigService`                    | `config/`                  | ✅ Built + tested | 12 unit              | Redis hash source of truth; flat JSON; kill switch key; @Bean only (no @Component)                                                        |
 | `LimitConfigRequest`                    | `model/`                   | ✅ Built          | via AdminControllerTest | Record: algorithm + typed fields (capacity, refillRatePerSecond, limit, windowMs)                                                       |
 | `FeatureFlagService`                    | `config/`                  | ✅ Built          | —                    | Interface: `getFlagForEndpoint`, `isClientInRollout`, `getAllFlags`, `putFlag`, `removeFlag`                                               |
-| `RedisFeatureFlagService`               | `config/`                  | ✅ Built + tested | 14 unit              | Redis hash `fluxguard:flags`; JSON per flag; @Bean only (no @Component)                                                                   |
+| `RedisFeatureFlagService`               | `config/`                  | ✅ Built + tested | 16 unit              | Redis hash `fluxguard:flags`; JSON per flag; null overrideConfig handled in serialize/deserialize; @Bean only (no @Component)              |
 | `FeatureFlag`                           | `model/`                   | ✅ Built          | —                    | Record: endpoint, enabled, darkLaunch, rolloutPercent, overrideConfig                                                                      |
 | `FeatureFlagRequest`                    | `model/`                   | ✅ Built          | —                    | Record: enabled, darkLaunch, rolloutPercent, algorithm + limit fields                                                                      |
 | `HashUtil`                              | `util/`                    | ✅ Built          | via RedisFeatureFlagServiceTest | `rolloutBucket(endpoint, clientId)` → stable int [0,99] via `Objects.hash % 100`                                             |
@@ -228,3 +232,4 @@
 - [x] Dark launch mode — `FeatureFlagService` + `RedisFeatureFlagService`; shadow run in `RateLimitFilter`; `rate.limit.dark_launch.would_deny` metric; 138 tests passing
 - [x] Auth + audit log — `AdminAuthFilter` (API-key header, 401 on fail); `RedisAuditService` dual-write; `GET /admin/audit`; `/admin/flags` CRUD (GET/PUT/DELETE) with rollout + override validation; 154 unit tests passing
 - [x] Final integration + ECS deployment wired end-to-end — deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled; 127 unit + 7 IT passing
+- [x] Production-hardening complete — failure-path/boundary/CRUD round-trip coverage; null overrideConfig NPE fix; deserialize missing-algo fix; **197 total tests (175 unit + 22 IT), 0 failures, `mvn verify` green**

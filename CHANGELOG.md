@@ -5,6 +5,23 @@
 
 ---
 
+## [2026-04-17] — Hardening + release — Production-hardening, test coverage expansion, null overrideConfig bugfix
+
+### Bugfixes
+- `RedisFeatureFlagService.serialize()` — NPE when `overrideConfig == null`; wrapped algorithm block in `if (flag.overrideConfig() != null)` guard
+- `RedisFeatureFlagService.deserialize()` — missing `algorithm` field (empty string from `asText()`) previously returned `Optional.empty()`, making flags without overrides invisible after storage; added `else if (algorithm.isEmpty()) { overrideConfig = null; }` branch
+
+### New tests (197 total: 175 unit + 22 IT)
+- `RateLimitFilterTest` (+4) — shadow Redis failure swallowed; plain `RuntimeException` fails open + `redis_error` counter; malformed Lua result (`ClassCastException`) fails open; 3 repeated requests accumulate allowed counter correctly
+- `RedisAuditServiceTest` (+2) — blank actor normalizes to `"unknown"`; `trim()` failure after `rightPush()` is swallowed
+- `AdminControllerTest` (+13) — rollout 0/100 valid; rollout −1 → 400; zero/negative capacity → 400; negative `refillRatePerSecond` → 400; zero limit → 400; negative `windowMs` → 400; audit limit 0/1/1000 pass-through; audit limit 1001 capped at 1000; delete-nonexistent config → 204; delete-nonexistent flag → 204
+- `RedisFeatureFlagServiceTest` (+2) — `putFlag` with `null` override serializes without algorithm fields; `getFlagForEndpoint` from JSON with no `algorithm` field deserializes to flag with `null` `overrideConfig`
+- `AdminAuthFilterIT` (+4) — config CRUD round-trip (PUT → GET verify → DELETE → GET absent); flag CRUD round-trip with token_bucket override (PUT → GET shape → DELETE → GET absent); `PUT /admin/flags` without override → 200 (regression guard); `GET /admin/audit` returns JSON array
+
+### `mvn verify`: BUILD SUCCESS — 175 unit + 22 IT = 197 total, 0 failures
+
+---
+
 ## [2026-04-17] — Week 11 (continued) — /admin/flags CRUD, AdminAuthFilterIT, Jackson serialization fix
 
 - `FeatureFlagRequest.java` (new) — request record for `PUT /admin/flags`: `enabled`, `darkLaunch`, `rolloutPercent`, optional `algorithm` + `capacity`/`refillRatePerSecond`/`limit`/`windowMs` fields
