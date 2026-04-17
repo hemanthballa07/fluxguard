@@ -76,7 +76,7 @@
 
 **Tests status:**
 - Unit tests: 154 (all pass)
-- Integration tests: 11 (all pass, require Docker)
+- Integration tests: 17 (all pass, require Docker)
 - Build: `mvn verify` — BUILD SUCCESS
 - Updated `RateLimitFilter`: wired `FeatureFlagService`; added `applyWithFlag()` (rollout check + dark launch routing); `runDarkLaunchShadow()` (shadow execution with `:dark` suffix, fail-open, `recordDarkLaunchWouldDeny`)
 - Updated `PrometheusMetricsCollector`: added `METRIC_DARK_LAUNCH` constant + `recordDarkLaunchWouldDeny()` method
@@ -120,7 +120,7 @@
 ---
 
 ## Next session pickup
-**First task:** Week 11 fully complete — all 145 unit + 11 IT pass. Consider next: `/admin/flags` CRUD endpoints, integration test coverage for AdminAuthFilter, or project wrap-up / README polish.
+**First task:** Project complete — 154 unit + 17 IT passing, all resume bullets earned, CHANGELOG and README current.
 **Context needed:** Read CLAUDE.md + this file only
 **Open questions:** none
 
