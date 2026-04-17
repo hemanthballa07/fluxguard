@@ -37,6 +37,14 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+            <!-- micrometer-tracing-bridge-otel:1.4.x pulls opentelemetry-instrumentation-api-incubator:2.9.0-alpha,
+                 which conflicts with the 2.25.0-alpha version required by opentelemetry-spring-webmvc-6.0.
+                 Pinning to 2.25.0-alpha keeps both the micrometer MDC bridge and the OTel web instrumentation working. -->
+            <dependency>
+                <groupId>io.opentelemetry.instrumentation</groupId>
+                <artifactId>opentelemetry-instrumentation-api-incubator</artifactId>
+                <version>2.25.0-alpha</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 

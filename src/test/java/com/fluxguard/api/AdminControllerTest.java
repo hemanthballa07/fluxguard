@@ -36,17 +36,17 @@ class AdminControllerTest {
     private static final int    OVER_MAX_LIMIT  = 5000;
     private static final int    MAX_AUDIT_LIMIT = 1000;
 
-    private ConfigService    mockConfigService;
-    private AuditService     mockAuditService;
+    private ConfigService      mockConfigService;
+    private AuditService       mockAuditService;
     private HttpServletRequest mockRequest;
-    private AdminController  controller;
+    private AdminController    controller;
 
     @BeforeEach
     void setUp() {
         mockConfigService = mock(ConfigService.class);
         mockAuditService  = mock(AuditService.class);
         mockRequest       = mock(HttpServletRequest.class);
-        controller = new AdminController(mockConfigService, mockAuditService, mockRequest);
+        controller = new AdminController(mockConfigService, mockAuditService);
     }
 
     @Test
@@ -65,7 +65,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "sliding_window", null, null, LIMIT, WINDOW_MS);
 
-        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req);
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(mockConfigService).putConfig(eq(ENDPOINT), any(LimitConfig.class));
@@ -76,7 +76,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "token_bucket", CAPACITY, REFILL_RATE, null, null);
 
-        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req);
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(mockConfigService).putConfig(eq(ENDPOINT), any(LimitConfig.class));
@@ -87,7 +87,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "mystery_algo", null, null, null, null);
 
-        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req);
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
 
         assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
         verify(mockConfigService, never()).putConfig(any(), any());
@@ -98,7 +98,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "token_bucket", null, REFILL_RATE, null, null);
 
-        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req);
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
 
         assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
         verify(mockConfigService, never()).putConfig(any(), any());
@@ -109,7 +109,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "sliding_window", null, null, null, WINDOW_MS);
 
-        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req);
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
 
         assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
         verify(mockConfigService, never()).putConfig(any(), any());
@@ -117,7 +117,7 @@ class AdminControllerTest {
 
     @Test
     void removeConfigDelegates() {
-        final ResponseEntity<Void> resp = controller.removeConfig(ENDPOINT);
+        final ResponseEntity<Void> resp = controller.removeConfig(ENDPOINT, mockRequest);
 
         assertEquals(HttpStatus.NO_CONTENT, resp.getStatusCode());
         verify(mockConfigService).removeConfig(ENDPOINT);
@@ -125,7 +125,7 @@ class AdminControllerTest {
 
     @Test
     void activateKillSwitchSetsTrue() {
-        final ResponseEntity<Void> resp = controller.activateKillSwitch();
+        final ResponseEntity<Void> resp = controller.activateKillSwitch(mockRequest);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(mockConfigService).setKillSwitch(true);
@@ -133,7 +133,7 @@ class AdminControllerTest {
 
     @Test
     void deactivateKillSwitchSetsFalse() {
-        final ResponseEntity<Void> resp = controller.deactivateKillSwitch();
+        final ResponseEntity<Void> resp = controller.deactivateKillSwitch(mockRequest);
 
         assertEquals(HttpStatus.OK, resp.getStatusCode());
         verify(mockConfigService).setKillSwitch(false);
@@ -146,7 +146,7 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "token_bucket", CAPACITY, REFILL_RATE, null, null);
 
-        controller.putConfig(ENDPOINT, req);
+        controller.putConfig(ENDPOINT, req, mockRequest);
 
         verify(mockAuditService).record(eq("PUT_CONFIG"), eq(ENDPOINT),
             contains("token_bucket"), any());
@@ -157,28 +157,28 @@ class AdminControllerTest {
         final LimitConfigRequest req = new LimitConfigRequest(
             "mystery_algo", null, null, null, null);
 
-        controller.putConfig(ENDPOINT, req);
+        controller.putConfig(ENDPOINT, req, mockRequest);
 
         verify(mockAuditService, never()).record(any(), any(), any(), any());
     }
 
     @Test
     void removeConfigAuditsSuccess() {
-        controller.removeConfig(ENDPOINT);
+        controller.removeConfig(ENDPOINT, mockRequest);
 
         verify(mockAuditService).record(eq("REMOVE_CONFIG"), eq(ENDPOINT), any(), any());
     }
 
     @Test
     void activateKillSwitchAuditsSuccess() {
-        controller.activateKillSwitch();
+        controller.activateKillSwitch(mockRequest);
 
         verify(mockAuditService).record(eq("ACTIVATE_KILL_SWITCH"), eq("global"), any(), any());
     }
 
     @Test
     void deactivateKillSwitchAuditsSuccess() {
-        controller.deactivateKillSwitch();
+        controller.deactivateKillSwitch(mockRequest);
 
         verify(mockAuditService).record(eq("DEACTIVATE_KILL_SWITCH"), eq("global"), any(), any());
     }
@@ -204,7 +204,7 @@ class AdminControllerTest {
     void getAuditLogActorComesFromRequestAttribute() {
         when(mockRequest.getAttribute("X-Admin-Actor")).thenReturn("admin");
 
-        controller.activateKillSwitch();
+        controller.activateKillSwitch(mockRequest);
 
         verify(mockAuditService).record(any(), any(), any(), eq("admin"));
     }

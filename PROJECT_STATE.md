@@ -76,8 +76,8 @@
 
 **Tests status:**
 - Unit tests: 145 (all pass)
-- Integration tests: 7 (require Docker)
-- Build: `mvn test` — BUILD SUCCESS
+- Integration tests: 11 (all pass, require Docker)
+- Build: `mvn verify` — BUILD SUCCESS
 - Updated `RateLimitFilter`: wired `FeatureFlagService`; added `applyWithFlag()` (rollout check + dark launch routing); `runDarkLaunchShadow()` (shadow execution with `:dark` suffix, fail-open, `recordDarkLaunchWouldDeny`)
 - Updated `PrometheusMetricsCollector`: added `METRIC_DARK_LAUNCH` constant + `recordDarkLaunchWouldDeny()` method
 - Updated `RateLimitConfiguration`: added `@Bean FeatureFlagService`
@@ -120,7 +120,7 @@
 ---
 
 ## Next session pickup
-**First task:** Week 12 wrap-up — write ADR-006, run `mvn verify` (requires Docker), final README resume bullet, consider FeatureFlagRequest + `/admin/flags` endpoints if time allows.
+**First task:** Week 11 fully complete — all 145 unit + 11 IT pass. Consider next: `/admin/flags` CRUD endpoints, integration test coverage for AdminAuthFilter, or project wrap-up / README polish.
 **Context needed:** Read CLAUDE.md + this file only
 **Open questions:** none
 

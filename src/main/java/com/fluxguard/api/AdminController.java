@@ -34,24 +34,20 @@ public class AdminController {
     private static final String ALGO_SLIDING_WINDOW = "sliding_window";
     private static final int    MAX_AUDIT_LIMIT     = 1000;
 
-    private final ConfigService    configService;
-    private final AuditService     auditService;
-    private final HttpServletRequest request;
+    private final ConfigService configService;
+    private final AuditService  auditService;
 
     /**
      * Constructs the controller with its dependencies.
      *
-     * @param configService  runtime config store
-     * @param auditService   records admin mutation events
-     * @param request        current HTTP request (Spring injects a scoped proxy)
+     * @param configService runtime config store
+     * @param auditService  records admin mutation events
      */
     public AdminController(
             final ConfigService configService,
-            final AuditService auditService,
-            final HttpServletRequest request) {
+            final AuditService auditService) {
         this.configService = configService;
         this.auditService  = auditService;
-        this.request       = request;
     }
 
     /**
@@ -74,18 +70,20 @@ public class AdminController {
      *
      * @param endpoint exact HTTP request URI to configure
      * @param req      algorithm type and parameters
+     * @param request  injected HTTP request for actor resolution
      * @return 200 on success, 400 if the request is invalid
      */
     @PostMapping("/configs")
     public ResponseEntity<Void> putConfig(
             @RequestParam final String endpoint,
-            @RequestBody @Valid final LimitConfigRequest req) {
+            @RequestBody @Valid final LimitConfigRequest req,
+            final HttpServletRequest request) {
         final LimitConfig config = toConfig(endpoint, req);
         if (config == null) {
             return ResponseEntity.badRequest().build();
         }
         configService.putConfig(endpoint, config);
-        auditService.record("PUT_CONFIG", endpoint, req.algorithm(), actor());
+        auditService.record("PUT_CONFIG", endpoint, req.algorithm(), actor(request));
         return ResponseEntity.ok().build();
     }
 
@@ -95,36 +93,43 @@ public class AdminController {
      * <p>No-op if the endpoint is not configured.
      *
      * @param endpoint exact HTTP request URI to remove
+     * @param request  injected HTTP request for actor resolution
      * @return 204 No Content
      */
     @DeleteMapping("/configs")
-    public ResponseEntity<Void> removeConfig(@RequestParam final String endpoint) {
+    public ResponseEntity<Void> removeConfig(
+            @RequestParam final String endpoint,
+            final HttpServletRequest request) {
         configService.removeConfig(endpoint);
-        auditService.record("REMOVE_CONFIG", endpoint, "removed", actor());
+        auditService.record("REMOVE_CONFIG", endpoint, "removed", actor(request));
         return ResponseEntity.noContent().build();
     }
 
     /**
      * Activates the global kill switch — all rate limiting is immediately disabled.
      *
+     * @param request injected HTTP request for actor resolution
      * @return 200 OK
      */
     @PostMapping("/kill-switch/activate")
-    public ResponseEntity<Void> activateKillSwitch() {
+    public ResponseEntity<Void> activateKillSwitch(final HttpServletRequest request) {
         configService.setKillSwitch(true);
-        auditService.record("ACTIVATE_KILL_SWITCH", "global", "kill switch activated", actor());
+        auditService.record("ACTIVATE_KILL_SWITCH", "global", "kill switch activated",
+                actor(request));
         return ResponseEntity.ok().build();
     }
 
     /**
      * Deactivates the global kill switch — rate limiting resumes normally.
      *
+     * @param request injected HTTP request for actor resolution
      * @return 200 OK
      */
     @PostMapping("/kill-switch/deactivate")
-    public ResponseEntity<Void> deactivateKillSwitch() {
+    public ResponseEntity<Void> deactivateKillSwitch(final HttpServletRequest request) {
         configService.setKillSwitch(false);
-        auditService.record("DEACTIVATE_KILL_SWITCH", "global", "kill switch deactivated", actor());
+        auditService.record("DEACTIVATE_KILL_SWITCH", "global", "kill switch deactivated",
+                actor(request));
         return ResponseEntity.ok().build();
     }
 
@@ -147,9 +152,10 @@ public class AdminController {
     /**
      * Extracts the actor identity set by {@link com.fluxguard.filter.AdminAuthFilter}.
      *
+     * @param request the current HTTP request
      * @return the actor string, or {@code "unknown"} if the attribute is absent
      */
-    private String actor() {
+    private static String actor(final HttpServletRequest request) {
         final Object attr = request.getAttribute("X-Admin-Actor");
         return attr != null ? attr.toString() : "unknown";
     }
