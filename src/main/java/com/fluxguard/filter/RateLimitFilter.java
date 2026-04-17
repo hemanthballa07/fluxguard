@@ -1,5 +1,6 @@
 package com.fluxguard.filter;
 
+import com.fluxguard.config.ConfigService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.model.ClientIdentity;
@@ -16,7 +17,6 @@ import io.opentelemetry.context.Scope;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.util.List;
-import java.util.Map;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,8 +41,8 @@ import org.springframework.web.servlet.HandlerInterceptor;
  * <p>Duration is recorded only when a real rate-limit decision was made (step 3).
  * The 400 path (step 1) and unknown-path pass-through (step 2) do not record duration.
  *
- * <p>This is the <em>only</em> class in the application that calls Redis for
- * rate-limiting decisions, per the architectural rule in CLAUDE.md.
+ * <p>This class calls Redis for rate-limiting decisions via {@link com.fluxguard.redis.LuaScriptExecutor}.
+ * {@link com.fluxguard.config.ConfigService} also calls Redis for config CRUD — see ADR-004.
  */
 @Component
 public class RateLimitFilter implements HandlerInterceptor {
@@ -87,7 +87,7 @@ public class RateLimitFilter implements HandlerInterceptor {
     private static final long MILLIS_PER_SECOND        = 1000L;
 
     private final LuaScriptExecutor executor;
-    private final Map<String, LimitConfig> configByPath;
+    private final ConfigService configService;
     private final ClockProvider clock;
     private final CircuitBreaker circuitBreaker;
     private final PrometheusMetricsCollector metrics;
@@ -97,7 +97,7 @@ public class RateLimitFilter implements HandlerInterceptor {
      * Constructs the filter with all required collaborators.
      *
      * @param executor        executes Lua scripts against Redis
-     * @param configByPath    exact-path-to-algorithm bindings
+     * @param configService   runtime config store; queried per request
      * @param clock           injectable clock; never call {@code System.currentTimeMillis()} directly
      * @param circuitBreaker  Resilience4j circuit breaker wrapping Redis calls
      * @param metrics         Micrometer metrics facade for all rate-limit signals
@@ -105,13 +105,13 @@ public class RateLimitFilter implements HandlerInterceptor {
      */
     public RateLimitFilter(
             final LuaScriptExecutor executor,
-            final Map<String, LimitConfig> configByPath,
+            final ConfigService configService,
             final ClockProvider clock,
             final CircuitBreaker circuitBreaker,
             final PrometheusMetricsCollector metrics,
             final Tracer tracer) {
         this.executor = executor;
-        this.configByPath = configByPath;
+        this.configService = configService;
         this.clock = clock;
         this.circuitBreaker = circuitBreaker;
         this.metrics = metrics;
@@ -134,13 +134,16 @@ public class RateLimitFilter implements HandlerInterceptor {
             final HttpServletRequest request,
             final HttpServletResponse response,
             final Object handler) {
+        if (configService.isKillSwitchActive()) {
+            return true;
+        }
         final String clientId = request.getHeader(HEADER_CLIENT_ID);
         if (clientId == null || clientId.isBlank()) {
             response.setStatus(STATUS_BAD_REQUEST);
             return false;
         }
         final String path = request.getRequestURI();
-        final LimitConfig config = configByPath.get(path);
+        final LimitConfig config = configService.getConfig(path).orElse(null);
         if (config == null) {
             return true;
         }

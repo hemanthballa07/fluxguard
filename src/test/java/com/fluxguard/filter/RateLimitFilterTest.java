@@ -1,5 +1,6 @@
 package com.fluxguard.filter;
 
+import com.fluxguard.config.ConfigService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
@@ -12,7 +13,6 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Timer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.util.List;
-import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.mock.web.MockHttpServletRequest;
@@ -68,6 +68,7 @@ class RateLimitFilterTest {
     private static final String ALGORITHM_NAME = "sliding_window";
 
     private LuaScriptExecutor mockExecutor;
+    private ConfigService mockConfigService;
     private ClockProvider mockClock;
     private SimpleMeterRegistry meterRegistry;
     private PrometheusMetricsCollector collector;
@@ -90,15 +91,18 @@ class RateLimitFilterTest {
             .build();
         circuitBreaker = CircuitBreaker.of("test-cb", cbConfig);
 
-        final Map<String, LimitConfig> configs = Map.of(
-            KNOWN_PATH, LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)
-        );
+        mockConfigService = mock(ConfigService.class);
+        when(mockConfigService.isKillSwitchActive()).thenReturn(false);
+        when(mockConfigService.getConfig(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(
+                LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)));
+        when(mockConfigService.getConfig(UNKNOWN_PATH)).thenReturn(java.util.Optional.empty());
 
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
 
         filter = new RateLimitFilter(
-            mockExecutor, configs, mockClock, circuitBreaker, collector,
+            mockExecutor, mockConfigService, mockClock, circuitBreaker, collector,
             OpenTelemetry.noop().getTracer("test"));
     }
 
