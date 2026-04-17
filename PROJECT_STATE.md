@@ -36,7 +36,7 @@
 | 8    | k6 benchmarks + README              | ✅     | `BenchmarkController`, 5 k6 scripts, `run-benchmark.sh` rewrite, always_on run, README table populated                                        |
 | 9    | Config service design               | ✅     | `ConfigService`, `RedisConfigService`, `AdminController`, `LimitConfigRequest`, ADR-004; 111 tests (104 unit + 7 IT)                          |
 | 10   | Feature flags + dark launch         | ✅     | `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService`, ADR-005; dark launch wired into filter; `rate.limit.dark_launch.would_deny` metric; 127 unit tests |
-| 11   | Auth + audit log                    | ✅     | `AdminAuthFilter` (`X-Admin-Api-Key` header, 401 on fail, sets `X-Admin-Actor`), `AuditService`, `RedisAuditService` (dual-write log+Redis), `GET /admin/audit`; ADR-006; 145 unit tests |
+| 11   | Auth + audit log                    | ✅     | `AdminAuthFilter` (`X-Admin-Api-Key` header, 401 on fail, sets `X-Admin-Actor`), `AuditService`, `RedisAuditService` (dual-write log+Redis), `GET /admin/audit`; `/admin/flags` CRUD; ADR-006; 154 unit tests |
 | 12   | Integration + final polish          | ✅     | deploy.sh rewrite; MDC trace_id fix (`micrometer-tracing-bridge-otel` + `logback-spring.xml`); Week 10 production code gap filled; 127 unit + 7 IT |
 
 ---
@@ -75,7 +75,7 @@
 - `GET /admin/audit` capped at 1000 entries; Redis list stores up to 10 000
 
 **Tests status:**
-- Unit tests: 145 (all pass)
+- Unit tests: 154 (all pass)
 - Integration tests: 11 (all pass, require Docker)
 - Build: `mvn verify` — BUILD SUCCESS
 - Updated `RateLimitFilter`: wired `FeatureFlagService`; added `applyWithFlag()` (rollout check + dark launch routing); `runDarkLaunchShadow()` (shadow execution with `:dark` suffix, fail-open, `recordDarkLaunchWouldDeny`)
@@ -147,7 +147,7 @@
 | `RateLimitException`                    | `exception/`               | ✅ Built          | —                    | Unchecked; carries `retryAfterMs`                                                                                                          |
 | `RedisUnavailableException`             | `exception/`               | ✅ Built          | —                    | Unchecked; thrown by LuaScriptExecutor on null result                                                                                      |
 | `PrometheusMetricsCollector`            | `metrics/`                 | ✅ Built + tested | 11 unit              | 5 metric families; `publishPercentileHistogram()` on timers                                                                                |
-| `AdminController`                       | `api/`                     | ✅ Built + tested | 17 unit              | 6 endpoints: GET/PUT/DELETE configs, kill-switch activate/deactivate, GET /admin/audit; audit on all mutations |
+| `AdminController`                       | `api/`                     | ✅ Built + tested | 26 unit              | 9 endpoints: GET/PUT/DELETE configs, GET/PUT/DELETE flags, kill-switch activate/deactivate, GET /admin/audit; audit on all mutations |
 | `AdminAuthFilter`                       | `filter/`                  | ✅ Built + tested | 4 unit               | `X-Admin-Api-Key` header check; 401 on miss/mismatch; sets `X-Admin-Actor` attr; `/admin/**` only             |
 | `AuditService`                          | `api/`                     | ✅ Built          | —                    | Interface: `record(action, target, details, actor)` + `getRecent(count)`                                       |
 | `RedisAuditService`                     | `api/`                     | ✅ Built + tested | 6 unit               | Dual-write: INFO log (`audit.admin`, always) + `RPUSH fluxguard:audit-log` capped 10 000 (fail-open)          |
@@ -226,5 +226,5 @@
 **Month 3 bullets (in progress):**
 - [x] Dynamic reconfiguration live — `ConfigService` + `RedisConfigService` + `AdminController`; 111 tests passing
 - [x] Dark launch mode — `FeatureFlagService` + `RedisFeatureFlagService`; shadow run in `RateLimitFilter`; `rate.limit.dark_launch.would_deny` metric; 138 tests passing
-- [x] Auth + audit log — `AdminAuthFilter` (API-key header, 401 on fail); `RedisAuditService` dual-write; `GET /admin/audit`; 145 unit tests passing
+- [x] Auth + audit log — `AdminAuthFilter` (API-key header, 401 on fail); `RedisAuditService` dual-write; `GET /admin/audit`; `/admin/flags` CRUD (GET/PUT/DELETE) with rollout + override validation; 154 unit tests passing
 - [x] Final integration + ECS deployment wired end-to-end — deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled; 127 unit + 7 IT passing
