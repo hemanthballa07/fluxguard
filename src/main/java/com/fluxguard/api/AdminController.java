@@ -3,7 +3,9 @@ package com.fluxguard.api;
 import com.fluxguard.config.ConfigService;
 import com.fluxguard.config.LimitConfig;
 import com.fluxguard.model.LimitConfigRequest;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
+import java.util.List;
 import java.util.Map;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -20,8 +22,9 @@ import org.springframework.web.bind.annotation.RestController;
  * <p>All mutations take effect immediately across all instances because
  * {@link ConfigService} is backed by the shared Redis cluster (ADR-004).
  *
- * <p>Security (authentication + authorisation) is deferred to Week 11.
- * These endpoints are currently unauthenticated.
+ * <p>Authentication is enforced by {@link com.fluxguard.filter.AdminAuthFilter}
+ * (ADR-006) — callers must supply the {@code X-Admin-Api-Key} header.
+ * All mutations are recorded via {@link AuditService}.
  */
 @RestController
 @RequestMapping("/admin")
@@ -29,16 +32,26 @@ public class AdminController {
 
     private static final String ALGO_TOKEN_BUCKET   = "token_bucket";
     private static final String ALGO_SLIDING_WINDOW = "sliding_window";
+    private static final int    MAX_AUDIT_LIMIT     = 1000;
 
-    private final ConfigService configService;
+    private final ConfigService    configService;
+    private final AuditService     auditService;
+    private final HttpServletRequest request;
 
     /**
-     * Constructs the controller with its config service dependency.
+     * Constructs the controller with its dependencies.
      *
-     * @param configService runtime config store
+     * @param configService  runtime config store
+     * @param auditService   records admin mutation events
+     * @param request        current HTTP request (Spring injects a scoped proxy)
      */
-    public AdminController(final ConfigService configService) {
+    public AdminController(
+            final ConfigService configService,
+            final AuditService auditService,
+            final HttpServletRequest request) {
         this.configService = configService;
+        this.auditService  = auditService;
+        this.request       = request;
     }
 
     /**
@@ -72,6 +85,7 @@ public class AdminController {
             return ResponseEntity.badRequest().build();
         }
         configService.putConfig(endpoint, config);
+        auditService.record("PUT_CONFIG", endpoint, req.algorithm(), actor());
         return ResponseEntity.ok().build();
     }
 
@@ -86,6 +100,7 @@ public class AdminController {
     @DeleteMapping("/configs")
     public ResponseEntity<Void> removeConfig(@RequestParam final String endpoint) {
         configService.removeConfig(endpoint);
+        auditService.record("REMOVE_CONFIG", endpoint, "removed", actor());
         return ResponseEntity.noContent().build();
     }
 
@@ -97,6 +112,7 @@ public class AdminController {
     @PostMapping("/kill-switch/activate")
     public ResponseEntity<Void> activateKillSwitch() {
         configService.setKillSwitch(true);
+        auditService.record("ACTIVATE_KILL_SWITCH", "global", "kill switch activated", actor());
         return ResponseEntity.ok().build();
     }
 
@@ -108,10 +124,35 @@ public class AdminController {
     @PostMapping("/kill-switch/deactivate")
     public ResponseEntity<Void> deactivateKillSwitch() {
         configService.setKillSwitch(false);
+        auditService.record("DEACTIVATE_KILL_SWITCH", "global", "kill switch deactivated", actor());
         return ResponseEntity.ok().build();
     }
 
+    /**
+     * Returns recent audit log entries, oldest first.
+     *
+     * <p>The {@code limit} parameter is capped at {@value #MAX_AUDIT_LIMIT} to prevent abuse.
+     *
+     * @param limit maximum number of entries to return (default 100, max 1000)
+     * @return 200 with a list of JSON audit strings
+     */
+    @GetMapping("/audit")
+    public ResponseEntity<List<String>> getAuditLog(
+            @RequestParam(defaultValue = "100") final int limit) {
+        return ResponseEntity.ok(auditService.getRecent(Math.min(limit, MAX_AUDIT_LIMIT)));
+    }
+
     // ── private helpers ──────────────────────────────────────────────────────
+
+    /**
+     * Extracts the actor identity set by {@link com.fluxguard.filter.AdminAuthFilter}.
+     *
+     * @return the actor string, or {@code "unknown"} if the attribute is absent
+     */
+    private String actor() {
+        final Object attr = request.getAttribute("X-Admin-Actor");
+        return attr != null ? attr.toString() : "unknown";
+    }
 
     /**
      * Converts a validated request body into a {@link LimitConfig}.

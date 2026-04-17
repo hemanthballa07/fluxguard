@@ -5,6 +5,20 @@
 
 ---
 
+## [2026-04-17] — Week 11 — Admin auth (API-key header) + append-only audit log
+
+- `AdminAuthFilter.java` (new) — `HandlerInterceptor` for `/admin/**`; validates `X-Admin-Api-Key` header; 401 on miss or mismatch; sets `X-Admin-Actor = "admin"` on success; key injected via constructor (no `@Value` on class — testable without Spring)
+- `AuditService.java` (new) — interface: `record(action, target, details, actor)` + `getRecent(count)`
+- `RedisAuditService.java` (new) — dual-write: INFO log via `audit.admin` logger (always, even on Redis failure) + `RPUSH fluxguard:audit-log <json>` capped at 10 000 via `LTRIM -10000 -1`; Redis failure is fail-open (WARN log only); `getRecent()` returns `LRANGE(-count, -1)` oldest-first
+- `RateLimitConfiguration.java` — added `@Bean AdminAuthFilter` (reads `@Value("${fluxguard.admin.api-key}")`) + `@Bean AuditService`
+- `WebMvcConfig.java` — injected `AdminAuthFilter`; registered scoped to `/admin/**` after `RateLimitFilter`
+- `AdminController.java` — added `AuditService` + `HttpServletRequest` to constructor; `actor()` helper reads `X-Admin-Actor` request attr; audit call on `putConfig` (success path), `removeConfig`, `activateKillSwitch`, `deactivateKillSwitch`; added `GET /admin/audit?limit=N` (default 100, cap 1000)
+- `application.yml` — added `fluxguard.admin.api-key: ${ADMIN_API_KEY:changeme-replace-in-prod}`
+- `AdminAuthFilterTest.java` (new) — 4 unit tests: correct key allows + sets actor, wrong key → 401, missing → 401, empty → 401
+- `RedisAuditServiceTest.java` (new) — 6 unit tests: rightPush+trim args, null actor → "unknown", Redis fail-open, range delegation, range failure → empty list, null result → empty list
+- `AdminControllerTest.java` — 17 unit tests (was 9); `AuditService` + `HttpServletRequest` mocks added; audit verified on all mutations; 2 new `getAuditLog` tests (delegates, caps at 1000); actor propagation test
+- `mvn test` — BUILD SUCCESS, 145 unit tests, 0 failures
+
 ## [2026-04-17] — Week 12 — Final polish: deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled
 
 - `scripts/deploy.sh` — complete rewrite: fluxguard ECR repo name, SHA + latest dual-tags, `:?` env guards for required vars (`ECR_REGISTRY`, `AWS_REGION`, `ECS_CLUSTER`, `ECS_SERVICE`), `aws ecs wait services-stable` for rollout verification, optional smoke test via `APP_URL/actuator/health`

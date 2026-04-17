@@ -1,11 +1,15 @@
 package com.fluxguard.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fluxguard.api.AuditService;
+import com.fluxguard.api.RedisAuditService;
+import com.fluxguard.filter.AdminAuthFilter;
 import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.opentelemetry.api.OpenTelemetry;
 import io.opentelemetry.api.trace.Tracer;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -123,6 +127,40 @@ public class RateLimitConfiguration {
             final StringRedisTemplate redis,
             final ObjectMapper objectMapper) {
         return new RedisFeatureFlagService(redis, objectMapper);
+    }
+
+    /**
+     * Provides the {@link AdminAuthFilter} that enforces API-key authentication on
+     * {@code /admin/**} endpoints.
+     *
+     * <p>This is the sole registration point — the implementation carries no
+     * {@code @Component} annotation (ADR-006). {@code @Value} resolution for the key
+     * lives here so that {@link AdminAuthFilter} remains testable without a Spring context.
+     *
+     * @param apiKey the expected API key, resolved from {@code fluxguard.admin.api-key}
+     * @return the admin auth interceptor
+     */
+    @Bean
+    public AdminAuthFilter adminAuthFilter(
+            @Value("${fluxguard.admin.api-key}") final String apiKey) {
+        return new AdminAuthFilter(apiKey);
+    }
+
+    /**
+     * Provides the {@link AuditService} backed by Redis.
+     *
+     * <p>This is the sole registration point for {@link RedisAuditService} —
+     * the implementation carries no {@code @Component} annotation (ADR-006).
+     *
+     * @param redis        Spring Data Redis string template
+     * @param objectMapper Jackson mapper auto-configured by Spring Boot
+     * @return the Redis-backed audit service
+     */
+    @Bean
+    public AuditService auditService(
+            final StringRedisTemplate redis,
+            final ObjectMapper objectMapper) {
+        return new RedisAuditService(redis, objectMapper);
     }
 
     /**

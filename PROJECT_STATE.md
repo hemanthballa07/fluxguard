@@ -7,7 +7,7 @@
 
 ## Current phase
 **Phase:** Month 3 — Dynamic reconfiguration + feature flags
-**Week:** 12 complete
+**Week:** 11 complete
 **Overall status:** IN PROGRESS
 
 ---
@@ -36,16 +36,48 @@
 | 8    | k6 benchmarks + README              | ✅     | `BenchmarkController`, 5 k6 scripts, `run-benchmark.sh` rewrite, always_on run, README table populated                                        |
 | 9    | Config service design               | ✅     | `ConfigService`, `RedisConfigService`, `AdminController`, `LimitConfigRequest`, ADR-004; 111 tests (104 unit + 7 IT)                          |
 | 10   | Feature flags + dark launch         | ✅     | `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService`, ADR-005; dark launch wired into filter; `rate.limit.dark_launch.would_deny` metric; 127 unit tests |
-| 11   | Auth + audit log                    | ⬜     | Deferred — `AdminAuthFilter`, `AuditService`, `RedisAuditService` not yet implemented                                                         |
+| 11   | Auth + audit log                    | ✅     | `AdminAuthFilter` (`X-Admin-Api-Key` header, 401 on fail, sets `X-Admin-Actor`), `AuditService`, `RedisAuditService` (dual-write log+Redis), `GET /admin/audit`; ADR-006; 145 unit tests |
 | 12   | Integration + final polish          | ✅     | deploy.sh rewrite; MDC trace_id fix (`micrometer-tracing-bridge-otel` + `logback-spring.xml`); Week 10 production code gap filled; 127 unit + 7 IT |
 
 ---
 
 ## Last session log
 **Date:** 2026-04-17
-**Duration:** ~120 min
+**Duration:** ~150 min
 **What was completed:**
-- Filled Week 10 production code gap: `HashUtil`, `FeatureFlag`, `FeatureFlagService`, `RedisFeatureFlagService` were missing from main (test files existed without corresponding production files). Reconstructed all four from committed tests.
+- Week 11: `AdminAuthFilter` — `HandlerInterceptor` for `/admin/**`; validates `X-Admin-Api-Key` header; 401 on miss/mismatch; sets `X-Admin-Actor = "admin"` on success; key injected via constructor (no `@Value` on class)
+- Week 11: `AuditService` interface — `record(action, target, details, actor)` + `getRecent(count)`
+- Week 11: `RedisAuditService` — dual-write: INFO log via `audit.admin` logger (always) + `RPUSH fluxguard:audit-log` capped at 10 000 via `LTRIM`; fail-open on Redis error
+- Week 11: `RateLimitConfiguration` — added `@Bean AdminAuthFilter` (reads `@Value ${fluxguard.admin.api-key}`) + `@Bean AuditService`
+- Week 11: `WebMvcConfig` — injected `AdminAuthFilter`; registered for `/admin/**` after `RateLimitFilter`
+- Week 11: `AdminController` — added `AuditService` + `HttpServletRequest` to constructor; `actor()` helper reads `X-Admin-Actor` attr; audit calls on all 4 mutations; added `GET /admin/audit?limit=N` (cap 1000)
+- Week 11: `application.yml` — added `fluxguard.admin.api-key: ${ADMIN_API_KEY:changeme-replace-in-prod}`
+- Week 11 tests: `AdminAuthFilterTest` (4 unit), `RedisAuditServiceTest` (6 unit), `AdminControllerTest` updated (9 → 17 unit)
+- `mvn test` — BUILD SUCCESS, 145 unit tests, 0 failures
+
+**Files changed:**
+- `src/main/resources/application.yml` — modified
+- `src/main/java/com/fluxguard/filter/AdminAuthFilter.java` — new
+- `src/main/java/com/fluxguard/api/AuditService.java` — new
+- `src/main/java/com/fluxguard/api/RedisAuditService.java` — new
+- `src/main/java/com/fluxguard/config/RateLimitConfiguration.java` — modified
+- `src/main/java/com/fluxguard/filter/WebMvcConfig.java` — modified
+- `src/main/java/com/fluxguard/api/AdminController.java` — modified
+- `src/test/java/com/fluxguard/filter/AdminAuthFilterTest.java` — new
+- `src/test/java/com/fluxguard/api/RedisAuditServiceTest.java` — new
+- `src/test/java/com/fluxguard/api/AdminControllerTest.java` — modified
+
+**Decisions made:**
+- Static API key via `X-Admin-Api-Key` header; actor always `"admin"`; no per-key identity (ADR-006)
+- `@Value` only at `@Bean` site — `AdminAuthFilter` testable without Spring context
+- Audit dual-write: SLF4J log (`audit.admin`) is durable source; Redis list is queryable store
+- Redis audit failure is fail-open — consistent with ADR-003 posture
+- `GET /admin/audit` capped at 1000 entries; Redis list stores up to 10 000
+
+**Tests status:**
+- Unit tests: 145 (all pass)
+- Integration tests: 7 (require Docker)
+- Build: `mvn test` — BUILD SUCCESS
 - Updated `RateLimitFilter`: wired `FeatureFlagService`; added `applyWithFlag()` (rollout check + dark launch routing); `runDarkLaunchShadow()` (shadow execution with `:dark` suffix, fail-open, `recordDarkLaunchWouldDeny`)
 - Updated `PrometheusMetricsCollector`: added `METRIC_DARK_LAUNCH` constant + `recordDarkLaunchWouldDeny()` method
 - Updated `RateLimitConfiguration`: added `@Bean FeatureFlagService`
@@ -88,9 +120,9 @@
 ---
 
 ## Next session pickup
-**First task:** Week 11 — Admin auth + audit log. Build `AdminAuthFilter` (X-Admin-Api-Key header, 401 on fail), `AuditService` interface, `RedisAuditService` (dual-write: INFO log + Redis list capped at 10 000), wire into `AdminController` + `WebMvcConfig`.
+**First task:** Week 12 wrap-up — write ADR-006, run `mvn verify` (requires Docker), final README resume bullet, consider FeatureFlagRequest + `/admin/flags` endpoints if time allows.
 **Context needed:** Read CLAUDE.md + this file only
-**Open questions:** none — MDC fix landed in Week 12 (`micrometer-tracing-bridge-otel` + `logback-spring.xml`)
+**Open questions:** none
 
 ---
 
@@ -115,10 +147,10 @@
 | `RateLimitException`                    | `exception/`               | ✅ Built          | —                    | Unchecked; carries `retryAfterMs`                                                                                                          |
 | `RedisUnavailableException`             | `exception/`               | ✅ Built          | —                    | Unchecked; thrown by LuaScriptExecutor on null result                                                                                      |
 | `PrometheusMetricsCollector`            | `metrics/`                 | ✅ Built + tested | 11 unit              | 5 metric families; `publishPercentileHistogram()` on timers                                                                                |
-| `AdminController`                       | `api/`                     | ✅ Built + tested | 9 unit               | 7 endpoints: GET/PUT/DELETE configs, kill-switch activate/deactivate, GET/PUT/DELETE flags                                                 |
-| `AdminAuthFilter`                       | `filter/`                  | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
-| `AuditService`                          | `api/`                     | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
-| `RedisAuditService`                     | `api/`                     | ⬜ Not built      | —                    | Deferred to Week 11                                                                                                                        |
+| `AdminController`                       | `api/`                     | ✅ Built + tested | 17 unit              | 6 endpoints: GET/PUT/DELETE configs, kill-switch activate/deactivate, GET /admin/audit; audit on all mutations |
+| `AdminAuthFilter`                       | `filter/`                  | ✅ Built + tested | 4 unit               | `X-Admin-Api-Key` header check; 401 on miss/mismatch; sets `X-Admin-Actor` attr; `/admin/**` only             |
+| `AuditService`                          | `api/`                     | ✅ Built          | —                    | Interface: `record(action, target, details, actor)` + `getRecent(count)`                                       |
+| `RedisAuditService`                     | `api/`                     | ✅ Built + tested | 6 unit               | Dual-write: INFO log (`audit.admin`, always) + `RPUSH fluxguard:audit-log` capped 10 000 (fail-open)          |
 | `ConfigService`                         | `config/`                  | ✅ Built + tested | —                    | Interface; implemented by `RedisConfigService`                                                                                             |
 | `RedisConfigService`                    | `config/`                  | ✅ Built + tested | 12 unit              | Redis hash source of truth; flat JSON; kill switch key; @Bean only (no @Component)                                                        |
 | `LimitConfigRequest`                    | `model/`                   | ✅ Built          | via AdminControllerTest | Record: algorithm + typed fields (capacity, refillRatePerSecond, limit, windowMs)                                                       |
@@ -194,5 +226,5 @@
 **Month 3 bullets (in progress):**
 - [x] Dynamic reconfiguration live — `ConfigService` + `RedisConfigService` + `AdminController`; 111 tests passing
 - [x] Dark launch mode — `FeatureFlagService` + `RedisFeatureFlagService`; shadow run in `RateLimitFilter`; `rate.limit.dark_launch.would_deny` metric; 138 tests passing
-- [ ] Auth + audit log — `AdminAuthFilter`, `AuditService`, `RedisAuditService` (deferred, Week 11 next)
+- [x] Auth + audit log — `AdminAuthFilter` (API-key header, 401 on fail); `RedisAuditService` dual-write; `GET /admin/audit`; 145 unit tests passing
 - [x] Final integration + ECS deployment wired end-to-end — deploy.sh rewrite, MDC trace_id fix, Week 10 production gap filled; 127 unit + 7 IT passing
