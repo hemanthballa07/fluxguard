@@ -1,7 +1,9 @@
 package com.fluxguard.filter;
 
 import com.fluxguard.config.ConfigService;
+import com.fluxguard.config.FeatureFlagService;
 import com.fluxguard.config.LimitConfig;
+import com.fluxguard.model.FeatureFlag;
 import com.fluxguard.exception.RedisUnavailableException;
 import com.fluxguard.metrics.PrometheusMetricsCollector;
 import com.fluxguard.redis.LuaScriptExecutor;
@@ -25,8 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -53,6 +57,10 @@ class RateLimitFilterTest {
     private static final long   TEST_WINDOW_MS    = 60_000L;
     private static final long   MOCK_REMAINING    = 7L;
     private static final long   MOCK_RESET_MS     = 30_000L;
+    private static final long   OVERRIDE_CAPACITY = 20L;
+    private static final long   OVERRIDE_REFILL   = 5L;
+    private static final int    NO_ROLLOUT        = 0;
+    private static final int    FULL_ROLLOUT      = 100;
 
     private static final String EXPECTED_RETRY_AFTER_SECONDS = "30";
     private static final int    STATUS_OK          = 200;
@@ -69,6 +77,7 @@ class RateLimitFilterTest {
 
     private LuaScriptExecutor mockExecutor;
     private ConfigService mockConfigService;
+    private FeatureFlagService mockFlagService;
     private ClockProvider mockClock;
     private SimpleMeterRegistry meterRegistry;
     private PrometheusMetricsCollector collector;
@@ -98,11 +107,13 @@ class RateLimitFilterTest {
                 LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS)));
         when(mockConfigService.getConfig(UNKNOWN_PATH)).thenReturn(java.util.Optional.empty());
 
+        mockFlagService = mock(FeatureFlagService.class);
+        when(mockFlagService.getFlagForEndpoint(anyString())).thenReturn(java.util.Optional.empty());
         when(mockExecutor.execute(anyString(), anyList(), anyList()))
             .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
 
         filter = new RateLimitFilter(
-            mockExecutor, mockConfigService, mockClock, circuitBreaker, collector,
+            mockExecutor, mockConfigService, mockFlagService, mockClock, circuitBreaker, collector,
             OpenTelemetry.noop().getTracer("test"));
     }
 
@@ -292,6 +303,19 @@ class RateLimitFilterTest {
             "Duration timer must NOT be registered for unknown (unlimted) path");
     }
 
+    @Test
+    void killSwitchActiveBypassesHeaderAndSkipsLookups() throws Exception {
+        when(mockConfigService.isKillSwitchActive()).thenReturn(true);
+
+        final boolean proceed =
+            filter.preHandle(buildRequest(KNOWN_PATH), new MockHttpServletResponse(), new Object());
+
+        assertTrue(proceed);
+        verify(mockConfigService, never()).getConfig(anyString());
+        verify(mockFlagService, never()).getFlagForEndpoint(anyString());
+        verify(mockExecutor, never()).execute(any(), any(), any());
+    }
+
     // ── Fail-open: Redis error ────────────────────────────────────────────────
 
     @Test
@@ -371,6 +395,169 @@ class RateLimitFilterTest {
             KNOWN_PATH, ALGORITHM_NAME, PrometheusMetricsCollector.RESULT_FAILOPEN);
         assertTrue(timer != null && timer.count() == 1L,
             "Duration timer must record one sample for a fail-open request");
+    }
+
+    // ── Feature flag: no flag ─────────────────────────────────────────────────
+
+    @Test
+    void noFlagProceedsWithPrimaryConfig() throws Exception {
+        // mockFlagService already returns empty by default in setUp
+        final MockHttpServletRequest req = buildRequestWithClient(KNOWN_PATH);
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+
+        final boolean proceed = filter.preHandle(req, res, new Object());
+
+        assertTrue(proceed);
+        assertEquals(String.valueOf(MOCK_REMAINING), res.getHeader(REMAINING_HEADER));
+    }
+
+    // ── Feature flag: disabled flag ───────────────────────────────────────────
+
+    @Test
+    void disabledFlagProceedsWithPrimaryConfig() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag disabledFlag =
+            new FeatureFlag(KNOWN_PATH, false, false, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(disabledFlag));
+        when(mockFlagService.isClientInRollout(disabledFlag, CLIENT_ID)).thenReturn(true);
+
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+                new Object());
+
+        assertTrue(proceed);
+        verify(mockFlagService, never()).isClientInRollout(disabledFlag, CLIENT_ID);
+    }
+
+    // ── Feature flag: live rollout (not dark launch) ───────────────────────────
+
+    @Test
+    void liveRolloutUsesOverrideAlgorithm() throws Exception {
+        final LimitConfig override =
+            LimitConfig.tokenBucket(KNOWN_PATH, OVERRIDE_CAPACITY, OVERRIDE_REFILL);
+        final FeatureFlag liveFlag =
+            new FeatureFlag(KNOWN_PATH, true, false, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(liveFlag));
+        when(mockFlagService.isClientInRollout(liveFlag, CLIENT_ID)).thenReturn(true);
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertTrue(proceed);
+        assertEquals(String.valueOf(MOCK_REMAINING), res.getHeader(REMAINING_HEADER));
+        verify(mockExecutor).execute(eq("token_bucket"), anyList(), anyList());
+    }
+
+    @Test
+    void enabledFlagOutsideRolloutUsesPrimaryAlgorithm() throws Exception {
+        final LimitConfig override =
+            LimitConfig.tokenBucket(KNOWN_PATH, OVERRIDE_CAPACITY, OVERRIDE_REFILL);
+        final FeatureFlag liveFlag =
+            new FeatureFlag(KNOWN_PATH, true, false, NO_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(liveFlag));
+        when(mockFlagService.isClientInRollout(liveFlag, CLIENT_ID)).thenReturn(false);
+
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+                new Object());
+
+        assertTrue(proceed);
+        verify(mockExecutor).execute(eq(ALGORITHM_NAME), anyList(), anyList());
+    }
+
+    // ── Feature flag: dark launch ─────────────────────────────────────────────
+
+    @Test
+    void darkLaunchRunsShadowAndAllowsWithPrimaryConfig() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag darkFlag =
+            new FeatureFlag(KNOWN_PATH, true, true, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(darkFlag));
+        when(mockFlagService.isClientInRollout(darkFlag, CLIENT_ID)).thenReturn(true);
+        // Both shadow and real calls return allow
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertTrue(proceed, "Dark launch must not affect real allow decision");
+        assertEquals(String.valueOf(MOCK_REMAINING), res.getHeader(REMAINING_HEADER));
+    }
+
+    @Test
+    void darkLaunchShadowDenyRecordsMetric() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag darkFlag =
+            new FeatureFlag(KNOWN_PATH, true, true, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(darkFlag));
+        when(mockFlagService.isClientInRollout(darkFlag, CLIENT_ID)).thenReturn(true);
+        // Shadow call (with ":dark" suffix client) returns deny; real call returns allow
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(0L, 0L, MOCK_RESET_MS))  // shadow: deny
+            .thenReturn(List.of(1L, MOCK_REMAINING, 0L)); // real: allow
+
+        filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+            new Object());
+
+        final io.micrometer.core.instrument.Counter darkCounter =
+            meterRegistry.find(PrometheusMetricsCollector.METRIC_DARK_LAUNCH)
+                .tag(PrometheusMetricsCollector.TAG_ENDPOINT, KNOWN_PATH)
+                .counter();
+        assertTrue(darkCounter != null && darkCounter.count() >= 1.0,
+            "Dark launch would-deny counter must be incremented");
+    }
+
+    @Test
+    void darkLaunchRealDenyStillReturns429() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag darkFlag =
+            new FeatureFlag(KNOWN_PATH, true, true, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(darkFlag));
+        when(mockFlagService.isClientInRollout(darkFlag, CLIENT_ID)).thenReturn(true);
+        // Both shadow and real deny
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of(0L, 0L, MOCK_RESET_MS));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertFalse(proceed);
+        assertEquals(STATUS_TOO_MANY, res.getStatus());
+    }
+
+    @Test
+    void darkLaunchOutsideRolloutDoesNotRunShadow() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag darkFlag =
+            new FeatureFlag(KNOWN_PATH, true, true, NO_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(darkFlag));
+        when(mockFlagService.isClientInRollout(darkFlag, CLIENT_ID)).thenReturn(false);
+
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+                new Object());
+
+        assertTrue(proceed);
+        verify(mockExecutor, times(1)).execute(anyString(), anyList(), anyList());
+        assertNull(meterRegistry.find(PrometheusMetricsCollector.METRIC_DARK_LAUNCH).counter());
     }
 
     // ── helpers ───────────────────────────────────────────────────────────────
