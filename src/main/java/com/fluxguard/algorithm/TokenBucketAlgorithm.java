@@ -1,5 +1,6 @@
 package com.fluxguard.algorithm;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fluxguard.model.RateLimitDecision;
 import java.util.List;
 
@@ -138,6 +139,7 @@ public final class TokenBucketAlgorithm implements RateLimitAlgorithm {
      *
      * @return maximum tokens
      */
+    @JsonProperty
     public long capacity() {
         return capacity;
     }
@@ -147,6 +149,7 @@ public final class TokenBucketAlgorithm implements RateLimitAlgorithm {
      *
      * @return tokens added per second
      */
+    @JsonProperty
     public long refillRatePerSecond() {
         return refillRatePerSecond;
     }

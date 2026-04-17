@@ -1,5 +1,7 @@
 package com.fluxguard.algorithm;
 
+import com.fasterxml.jackson.annotation.JsonSubTypes;
+import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fluxguard.model.RateLimitDecision;
 import java.util.List;
 
@@ -13,7 +15,17 @@ import java.util.List;
  * <p>The interface is intentionally narrow: it covers only the production execution
  * path. Algorithm-specific logic (refill maths, window logic) lives in concrete
  * classes so it can be unit-tested without Redis.
+ *
+ * <p>{@code @JsonTypeInfo} and {@code @JsonSubTypes} enable Jackson to serialise the
+ * concrete implementation to JSON (e.g. for {@code GET /admin/configs}) without a
+ * custom serialiser. Deserialisation is handled by {@link com.fluxguard.config.RedisConfigService}
+ * via a custom flat-JSON format and does not rely on these annotations.
  */
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
+@JsonSubTypes({
+    @JsonSubTypes.Type(value = TokenBucketAlgorithm.class, name = "token_bucket"),
+    @JsonSubTypes.Type(value = SlidingWindowAlgorithm.class, name = "sliding_window")
+})
 public sealed interface RateLimitAlgorithm
         permits TokenBucketAlgorithm, SlidingWindowAlgorithm {
 

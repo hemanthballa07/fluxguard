@@ -1,5 +1,6 @@
 package com.fluxguard.algorithm;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fluxguard.model.RateLimitDecision;
 import java.util.List;
 
@@ -159,6 +160,7 @@ public final class SlidingWindowAlgorithm implements RateLimitAlgorithm {
      *
      * @return maximum requests allowed per window (positive)
      */
+    @JsonProperty
     public long limit() {
         return limit;
     }
@@ -168,6 +170,7 @@ public final class SlidingWindowAlgorithm implements RateLimitAlgorithm {
      *
      * @return window size in milliseconds (positive)
      */
+    @JsonProperty
     public long windowMs() {
         return windowMs;
     }

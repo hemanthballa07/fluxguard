@@ -146,15 +146,15 @@ public class RateLimitFilter implements HandlerInterceptor {
         if (configService.isKillSwitchActive()) {
             return true;
         }
-        final String clientId = request.getHeader(HEADER_CLIENT_ID);
-        if (clientId == null || clientId.isBlank()) {
-            response.setStatus(STATUS_BAD_REQUEST);
-            return false;
-        }
         final String path = request.getRequestURI();
         final Optional<LimitConfig> configOpt = configService.getConfig(path);
         if (configOpt.isEmpty()) {
             return true;
+        }
+        final String clientId = request.getHeader(HEADER_CLIENT_ID);
+        if (clientId == null || clientId.isBlank()) {
+            response.setStatus(STATUS_BAD_REQUEST);
+            return false;
         }
         return applyWithFlag(path, clientId, configOpt.get(), response);
     }
