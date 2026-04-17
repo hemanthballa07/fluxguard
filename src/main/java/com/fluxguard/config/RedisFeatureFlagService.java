@@ -133,18 +133,20 @@ public class RedisFeatureFlagService implements FeatureFlagService {
         node.put(FIELD_ENABLED, flag.enabled());
         node.put(FIELD_DARK_LAUNCH, flag.darkLaunch());
         node.put(FIELD_ROLLOUT, flag.rolloutPercent());
-        if (flag.overrideConfig().algorithm() instanceof TokenBucketAlgorithm tb) {
-            node.put(FIELD_ALGORITHM, ALGO_TOKEN_BUCKET);
-            node.put(FIELD_CAPACITY, tb.capacity());
-            node.put(FIELD_REFILL_RATE, tb.refillRatePerSecond());
-        } else if (flag.overrideConfig().algorithm() instanceof SlidingWindowAlgorithm sw) {
-            node.put(FIELD_ALGORITHM, ALGO_SLIDING_WINDOW);
-            node.put(FIELD_LIMIT, sw.limit());
-            node.put(FIELD_WINDOW_MS, sw.windowMs());
-        } else {
-            throw new IllegalArgumentException(
-                "Unsupported algorithm: "
-                    + flag.overrideConfig().algorithm().getClass().getSimpleName());
+        if (flag.overrideConfig() != null) {
+            if (flag.overrideConfig().algorithm() instanceof TokenBucketAlgorithm tb) {
+                node.put(FIELD_ALGORITHM, ALGO_TOKEN_BUCKET);
+                node.put(FIELD_CAPACITY, tb.capacity());
+                node.put(FIELD_REFILL_RATE, tb.refillRatePerSecond());
+            } else if (flag.overrideConfig().algorithm() instanceof SlidingWindowAlgorithm sw) {
+                node.put(FIELD_ALGORITHM, ALGO_SLIDING_WINDOW);
+                node.put(FIELD_LIMIT, sw.limit());
+                node.put(FIELD_WINDOW_MS, sw.windowMs());
+            } else {
+                throw new IllegalArgumentException(
+                    "Unsupported algorithm: "
+                        + flag.overrideConfig().algorithm().getClass().getSimpleName());
+            }
         }
         try {
             return objectMapper.writeValueAsString(node);
@@ -177,10 +179,11 @@ public class RedisFeatureFlagService implements FeatureFlagService {
                 endpoint,
                 node.get(FIELD_LIMIT).asLong(),
                 node.get(FIELD_WINDOW_MS).asLong());
+        } else if (algorithm.isEmpty()) {
+            overrideConfig = null;
         } else {
             return Optional.empty();
         }
-        return Optional.of(
-            new FeatureFlag(endpoint, enabled, darkLaunch, rollout, overrideConfig));
+        return Optional.of(new FeatureFlag(endpoint, enabled, darkLaunch, rollout, overrideConfig));
     }
 }
