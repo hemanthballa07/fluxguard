@@ -50,9 +50,10 @@ All thresholds passed. p99 under 10ms across all scenarios with full tracing ena
 
 | ADR                                             | Decision                               | Status   |
 |-------------------------------------------------|----------------------------------------|----------|
-| [ADR-001](docs/adr/ADR-001-algorithm-choice.md) | Token bucket + sliding window selected | Accepted |
-| [ADR-002](docs/adr/ADR-002-data-store.md)       | Redis via ElastiCache                  | Accepted |
-| [ADR-003](docs/adr/ADR-003-fail-open.md)        | Fail-open on Redis unavailability      | Accepted |
+| [ADR-001](docs/adr/ADR-001-algorithm-choice.md)       | Token bucket + sliding window selected  | Accepted |
+| [ADR-002](docs/adr/ADR-002-data-store.md)             | Redis via ElastiCache                   | Accepted |
+| [ADR-003](docs/adr/ADR-003-fail-open.md)              | Fail-open on Redis unavailability       | Accepted |
+| [ADR-004](docs/adr/ADR-004-config-service-storage.md) | Redis hash as config source of truth    | Accepted |
 
 ## Local setup
 
