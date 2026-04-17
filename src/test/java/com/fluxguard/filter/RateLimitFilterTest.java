@@ -560,6 +560,73 @@ class RateLimitFilterTest {
         assertNull(meterRegistry.find(PrometheusMetricsCollector.METRIC_DARK_LAUNCH).counter());
     }
 
+    @Test
+    void darkLaunchShadowRedisFailureDoesNotPropagateToRealRequest() throws Exception {
+        final LimitConfig override =
+            LimitConfig.slidingWindow(KNOWN_PATH, TEST_LIMIT, TEST_WINDOW_MS);
+        final FeatureFlag darkFlag =
+            new FeatureFlag(KNOWN_PATH, true, true, FULL_ROLLOUT, override);
+        when(mockFlagService.getFlagForEndpoint(KNOWN_PATH))
+            .thenReturn(java.util.Optional.of(darkFlag));
+        when(mockFlagService.isClientInRollout(darkFlag, CLIENT_ID)).thenReturn(true);
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenThrow(new RuntimeException("Redis connection refused"))
+            .thenReturn(List.of(1L, MOCK_REMAINING, 0L));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertTrue(proceed, "Shadow Redis failure must not block the real request");
+        assertEquals(STATUS_OK, res.getStatus());
+    }
+
+    @Test
+    void genericRuntimeExceptionFromExecutorFailsOpen() throws Exception {
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenThrow(new RuntimeException("connection timeout"));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertTrue(proceed, "Generic RuntimeException must fail open");
+        assertEquals(STATUS_OK, res.getStatus());
+        assertEquals(1.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_REDIS_ERROR), COUNTER_DELTA);
+    }
+
+    @Test
+    void malformedLuaResultClassCastFailsOpen() throws Exception {
+        when(mockExecutor.execute(anyString(), anyList(), anyList()))
+            .thenReturn(List.of("wrong", "type", "data"));
+
+        final MockHttpServletResponse res = new MockHttpServletResponse();
+        final boolean proceed =
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), res, new Object());
+
+        assertTrue(proceed, "ClassCastException from malformed Lua result must fail open");
+        assertEquals(STATUS_OK, res.getStatus());
+        assertEquals(1.0, getFailOpenCount(KNOWN_PATH,
+            PrometheusMetricsCollector.REASON_REDIS_ERROR), COUNTER_DELTA);
+    }
+
+    // ── concurrency / repeat-request probe ───────────────────────────────────
+
+    private static final int REPEAT_COUNT        = 3;
+    private static final double REPEAT_COUNT_DBL = 3.0;
+
+    @Test
+    void repeatedAllowedRequestsAccumulateCounter() throws Exception {
+        for (int i = 0; i < REPEAT_COUNT; i++) {
+            filter.preHandle(buildRequestWithClient(KNOWN_PATH), new MockHttpServletResponse(),
+                new Object());
+        }
+
+        verify(mockExecutor, times(REPEAT_COUNT)).execute(anyString(), anyList(), anyList());
+        assertEquals(REPEAT_COUNT_DBL, getAllowedCount(KNOWN_PATH, ALGORITHM_NAME), COUNTER_DELTA);
+    }
+
     // ── helpers ───────────────────────────────────────────────────────────────
 
     private MockHttpServletRequest buildRequest(final String path) {

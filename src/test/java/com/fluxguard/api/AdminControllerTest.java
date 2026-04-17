@@ -38,8 +38,15 @@ class AdminControllerTest {
     private static final int    DEFAULT_LIMIT    = 100;
     private static final int    OVER_MAX_LIMIT   = 5000;
     private static final int    MAX_AUDIT_LIMIT  = 1000;
-    private static final int    ROLLOUT_PERCENT  = 50;
-    private static final int    ROLLOUT_OVER_MAX = 101;
+    private static final int    ROLLOUT_PERCENT       = 50;
+    private static final int    ROLLOUT_OVER_MAX      = 101;
+    private static final int    ROLLOUT_MIN           = 0;
+    private static final int    ROLLOUT_MAX           = 100;
+    private static final int    ROLLOUT_NEGATIVE      = -1;
+    private static final long   ZERO_LONG             = 0L;
+    private static final long   NEGATIVE_LONG         = -1L;
+    private static final int    AUDIT_LIMIT_ONE       = 1;
+    private static final int    AUDIT_LIMIT_ONE_ABOVE = 1001;
 
     private ConfigService      mockConfigService;
     private AuditService       mockAuditService;
@@ -309,5 +316,136 @@ class AdminControllerTest {
         controller.activateKillSwitch(mockRequest);
 
         verify(mockAuditService).record(any(), any(), any(), eq("admin"));
+    }
+
+    // ── rollout boundary tests ───────────────────────────────────────────────
+
+    @Test
+    void putFlagRolloutAtZeroAllowed() {
+        final FeatureFlagRequest req = new FeatureFlagRequest(
+            true, false, ROLLOUT_MIN, null, null, null, null, null);
+
+        final ResponseEntity<Void> resp = controller.putFlag(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        verify(mockFlagService).putFlag(eq(ENDPOINT), any(FeatureFlag.class));
+    }
+
+    @Test
+    void putFlagRolloutAtHundredAllowed() {
+        final FeatureFlagRequest req = new FeatureFlagRequest(
+            true, false, ROLLOUT_MAX, null, null, null, null, null);
+
+        final ResponseEntity<Void> resp = controller.putFlag(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.OK, resp.getStatusCode());
+        verify(mockFlagService).putFlag(eq(ENDPOINT), any(FeatureFlag.class));
+    }
+
+    @Test
+    void putFlagNegativeRolloutReturns400() {
+        final FeatureFlagRequest req = new FeatureFlagRequest(
+            true, false, ROLLOUT_NEGATIVE, null, null, null, null, null);
+
+        final ResponseEntity<Void> resp = controller.putFlag(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(mockFlagService, never()).putFlag(any(), any());
+    }
+
+    // ── token bucket validation boundary ────────────────────────────────────
+
+    @Test
+    void putConfigTokenBucketZeroCapacityReturns400() {
+        final LimitConfigRequest req = new LimitConfigRequest(
+            "token_bucket", ZERO_LONG, REFILL_RATE, null, null);
+
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(mockConfigService, never()).putConfig(any(), any());
+    }
+
+    @Test
+    void putConfigTokenBucketNegativeRefillRateReturns400() {
+        final LimitConfigRequest req = new LimitConfigRequest(
+            "token_bucket", CAPACITY, NEGATIVE_LONG, null, null);
+
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(mockConfigService, never()).putConfig(any(), any());
+    }
+
+    // ── sliding window validation boundary ──────────────────────────────────
+
+    @Test
+    void putConfigSlidingWindowZeroLimitReturns400() {
+        final LimitConfigRequest req = new LimitConfigRequest(
+            "sliding_window", null, null, ZERO_LONG, WINDOW_MS);
+
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(mockConfigService, never()).putConfig(any(), any());
+    }
+
+    @Test
+    void putConfigSlidingWindowNegativeWindowMsReturns400() {
+        final LimitConfigRequest req = new LimitConfigRequest(
+            "sliding_window", null, null, LIMIT, NEGATIVE_LONG);
+
+        final ResponseEntity<Void> resp = controller.putConfig(ENDPOINT, req, mockRequest);
+
+        assertEquals(HttpStatus.BAD_REQUEST, resp.getStatusCode());
+        verify(mockConfigService, never()).putConfig(any(), any());
+    }
+
+    // ── audit log limit boundary ─────────────────────────────────────────────
+
+    @Test
+    void getAuditLogZeroLimitPassesThrough() {
+        controller.getAuditLog(ROLLOUT_MIN);
+
+        verify(mockAuditService).getRecent(ROLLOUT_MIN);
+    }
+
+    @Test
+    void getAuditLogAtExactMaxPassesThrough() {
+        controller.getAuditLog(MAX_AUDIT_LIMIT);
+
+        verify(mockAuditService).getRecent(MAX_AUDIT_LIMIT);
+    }
+
+    @Test
+    void getAuditLogOneAboveMaxCapsAtMax() {
+        controller.getAuditLog(AUDIT_LIMIT_ONE_ABOVE);
+
+        verify(mockAuditService).getRecent(MAX_AUDIT_LIMIT);
+    }
+
+    @Test
+    void getAuditLogLimitOfOnePassesThrough() {
+        controller.getAuditLog(AUDIT_LIMIT_ONE);
+
+        verify(mockAuditService).getRecent(AUDIT_LIMIT_ONE);
+    }
+
+    // ── delete-nonexistent tests ──────────────────────────────────────────────
+
+    @Test
+    void removeNonexistentConfigReturns204() {
+        final ResponseEntity<Void> resp = controller.removeConfig("/api/nonexistent", mockRequest);
+
+        assertEquals(HttpStatus.NO_CONTENT, resp.getStatusCode());
+        verify(mockConfigService).removeConfig("/api/nonexistent");
+    }
+
+    @Test
+    void removeNonexistentFlagReturns204() {
+        final ResponseEntity<Void> resp = controller.removeFlag("/api/nonexistent", mockRequest);
+
+        assertEquals(HttpStatus.NO_CONTENT, resp.getStatusCode());
+        verify(mockFlagService).removeFlag("/api/nonexistent");
     }
 }

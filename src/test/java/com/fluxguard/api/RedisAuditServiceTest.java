@@ -101,4 +101,22 @@ class RedisAuditServiceTest {
 
         assertTrue(result.isEmpty());
     }
+
+    @Test
+    void recordWithBlankActorUsesUnknown() {
+        service.record("PUT_CONFIG", "/api/search", "sliding_window", "   ");
+
+        verify(listOps).rightPush(
+            eq(RedisAuditService.AUDIT_LOG_KEY),
+            argThat(json -> json.contains("\"actor\":\"unknown\"")));
+    }
+
+    @Test
+    void recordTrimFailureDoesNotThrow() {
+        doThrow(new RuntimeException("Redis down"))
+            .when(listOps).trim(any(), anyLong(), anyLong());
+
+        assertDoesNotThrow(() ->
+            service.record("PUT_CONFIG", "/api/search", "sliding_window", "admin"));
+    }
 }

@@ -14,6 +14,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -51,6 +52,9 @@ class RedisFeatureFlagServiceTest {
     private static final String JSON_SW_PUT =
         "{\"enabled\":true,\"darkLaunch\":false,\"rolloutPercent\":10,"
         + "\"algorithm\":\"sliding_window\",\"limit\":50,\"windowMs\":60000}";
+
+    private static final String JSON_NO_OVERRIDE =
+        "{\"enabled\":true,\"darkLaunch\":false,\"rolloutPercent\":10}";
 
     private HashOperations<String, Object, Object> hashOps;
     private StringRedisTemplate redis;
@@ -203,6 +207,31 @@ class RedisFeatureFlagServiceTest {
         final FeatureFlag flag = new FeatureFlag(ENDPOINT_SW, true, false, ROLLOUT_99, override);
 
         assertFalse(service.isClientInRollout(flag, findClientWithBucket(HashUtil.BUCKET_COUNT - 1)));
+    }
+
+    @Test
+    void putFlagWithNullOverrideSerializesWithoutAlgorithmFields() {
+        final FeatureFlag flag = new FeatureFlag(ENDPOINT_SW, true, false, ROLLOUT_SW, null);
+
+        service.putFlag(ENDPOINT_SW, flag);
+
+        verify(hashOps).put(
+            eq(RedisFeatureFlagService.FLAGS_HASH), eq(ENDPOINT_SW), eq(JSON_NO_OVERRIDE));
+    }
+
+    @Test
+    void getFlagWithNullOverrideDeserializesCorrectly() {
+        when(hashOps.get(RedisFeatureFlagService.FLAGS_HASH, ENDPOINT_SW))
+            .thenReturn(JSON_NO_OVERRIDE);
+
+        final Optional<FeatureFlag> result = service.getFlagForEndpoint(ENDPOINT_SW);
+
+        assertTrue(result.isPresent(), "Flag without override must deserialize to present");
+        final FeatureFlag flag = result.get();
+        assertTrue(flag.enabled());
+        assertFalse(flag.darkLaunch());
+        assertEquals(ROLLOUT_SW, flag.rolloutPercent());
+        assertNull(flag.overrideConfig(), "Flag without override must have null overrideConfig");
     }
 
     private String findClientWithBucket(final int bucket) {
