@@ -1,0 +1,10 @@
+target/
+*.class
+*.jar
+.env
+*.log
+k6/results/
+.DS_Store
+
+# Maven local resolver cache
+.m2/

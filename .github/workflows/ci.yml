@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Run unit tests
+        run: mvn test
+
+      - name: Warm Docker image cache (resilient to transient Docker Hub blips)
+        run: |
+          for i in 1 2 3 4 5 6; do
+            if docker pull redis:7-alpine; then exit 0; fi
+            echo "redis:7-alpine pull failed (attempt $i/6); retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::could not pull redis:7-alpine after 6 attempts (Docker Hub registry unreachable)"
+          exit 1
+
+      - name: Run integration tests
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: "true"
+        run: mvn failsafe:integration-test failsafe:verify
+
+      - name: Run Checkstyle
+        run: mvn checkstyle:check
+
+  docker-build:
+    if: github.event_name == 'push'
+    needs: build-and-test
+    runs-on: ubuntu-latest
+
+    env:
+      ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+      ECR_REPOSITORY: fluxguard
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}" \
+            -t "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest" \
+            .
+
+      - name: Push Docker image
+        run: |
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
